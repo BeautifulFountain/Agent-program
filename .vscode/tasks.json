@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AgentFlow: 启动后端",
+      "type": "shell",
+      "command": "${workspaceFolder}\\start-backend.ps1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "group": "agentflow-dev", "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "AgentFlow: 启动前端",
+      "type": "shell",
+      "command": "${workspaceFolder}\\start-frontend.ps1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "group": "agentflow-dev", "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "AgentFlow: 全部启动",
+      "dependsOn": ["AgentFlow: 启动后端", "AgentFlow: 启动前端"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "AgentFlow: 后端测试",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "-q"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "AgentFlow: 前端 Lint",
+      "type": "process",
+      "command": "${workspaceFolder}\\start-frontend.ps1",
+      "args": ["-Lint"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "AgentFlow: 前端构建",
+      "type": "process",
+      "command": "${workspaceFolder}\\start-frontend.ps1",
+      "args": ["-Build"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}
+

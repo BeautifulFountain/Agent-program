@@ -71,6 +71,17 @@ cd ..
 
 浏览器访问 `http://127.0.0.1:5173`。
 
+### 3. 在 VS Code 中运行
+
+打开命令面板 `Ctrl+Shift+P`，选择“任务：运行任务”，然后选择：
+
+- `AgentFlow: 全部启动`
+- `AgentFlow: 后端测试`
+- `AgentFlow: 前端 Lint`
+- `AgentFlow: 前端构建`
+
+项目已固定使用 `.venv` Python解释器。首次打开时可安装工作区推荐的Python、Pylance和ESLint扩展。
+
 ## 测试和构建
 
 ```powershell

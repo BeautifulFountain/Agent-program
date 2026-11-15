@@ -1,3 +1,8 @@
+param(
+    [switch]$Lint,
+    [switch]$Build
+)
+
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath (Join-Path $PSScriptRoot "frontend")
 if (-not (Test-Path -LiteralPath ".\node_modules\vite\bin\vite.js")) {
@@ -12,5 +17,13 @@ if (-not $nodePath) {
 if (-not $nodePath) {
     throw "未找到 Node.js。请安装 Node.js 20 或更高版本并重启 VS Code。"
 }
-& $nodePath ".\node_modules\vite\bin\vite.js" --host 127.0.0.1 --port 5173
+if ($Lint) {
+    & $nodePath ".\node_modules\eslint\bin\eslint.js" "."
+} elseif ($Build) {
+    & $nodePath ".\node_modules\typescript\bin\tsc" "-b"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $nodePath ".\node_modules\vite\bin\vite.js" "build"
+} else {
+    & $nodePath ".\node_modules\vite\bin\vite.js" --host 127.0.0.1 --port 5173
+}
 
