@@ -35,6 +35,7 @@ def seed_defaults(db: Database) -> None:
         nodes = [WorkflowNode(
             id=key, label=next(a[1] for a in AGENTS if a[0] == key), agent_id=key,
             kind="validator" if key == "reviewer" else "agent", dependencies=deps,
+            requires_approval=key == "requirements",
             position={"x": positions[i][0], "y": positions[i][1]},
         ) for i, (key, deps) in enumerate(specs)]
         workflow = Workflow(
@@ -42,4 +43,15 @@ def seed_defaults(db: Database) -> None:
             nodes=nodes, quality_threshold=settings.quality_threshold, max_loop_count=settings.max_loop_count,
         )
         db.upsert("workflows", workflow.id, workflow.model_dump())
+    else:
+        workflow = db.get("workflows", "research-demo")
+        changed = False
+        for node in workflow["nodes"]:
+            expected = node["id"] == "requirements"
+            if node.get("requires_approval") != expected:
+                node["requires_approval"] = expected
+                changed = True
+        if changed:
+            workflow["version"] = int(workflow.get("version", 1)) + 1
+            db.upsert("workflows", workflow["id"], workflow)
 

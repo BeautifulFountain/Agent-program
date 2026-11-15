@@ -4,6 +4,7 @@ import pytest
 
 from backend.database import Database, db
 from backend.engine import normalize_validation, run_manager
+from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
 from backend.tools import CalculatorTool
@@ -31,6 +32,22 @@ def test_calculator_is_safe_and_works():
         tool.calculate("__import__('os').system('whoami')")
 
 
+def test_agents_have_distinct_protocols_and_tools():
+    requirements_prompt, requirement_tools = agent_logic.prepare("requirements", "统计大学生使用AI的情况", "基础输入")
+    analyst_prompt, analyst_tools = agent_logic.prepare("analyst", "统计大学生使用AI的情况", "基础输入")
+    assert "approval_options" in requirements_prompt
+    assert "指标字典" in analyst_prompt
+    assert requirement_tools == []
+    assert analyst_tools[0]["tool"] == "calculator"
+
+
+def test_approval_options_parse_and_fallback():
+    output = '```approval_options\n[{"id":"scope","question":"范围？","type":"single","options":["本校","全国"]}]\n```'
+    parsed = extract_approval_options(output, "测试任务")
+    assert parsed[0]["options"] == ["本校", "全国"]
+    assert len(extract_approval_options("普通文本", "测试任务")) >= 3
+
+
 def test_database_round_trip(tmp_path):
     database = Database(str(tmp_path / "test.db"))
     database.initialize()
@@ -45,6 +62,12 @@ def test_full_research_loop_reaches_threshold():
         workflow = db.get("workflows", "research-demo")
         run = run_manager.create("分析人工智能辅助高校科研管理的应用价值与风险，并形成研究报告", workflow)
         await run_manager.tasks[run["id"]]
+        waiting = db.get("runs", run["id"])
+        assert waiting["status"] == "waiting_approval"
+        assert len(waiting["node_runs"]) == 1
+        assert len(waiting["approval"]["options"]) >= 3
+        run_manager.approve(run["id"], "研究范围限定为本科生，统计使用率、频率和主要场景。")
+        await run_manager.tasks[run["id"]]
         return db.get("runs", run["id"])
 
     result = asyncio.run(scenario())
@@ -52,6 +75,8 @@ def test_full_research_loop_reaches_threshold():
     assert result["score"] >= 80
     assert result["loop_count"] == 1
     assert len(result["node_runs"]) == 10
+    assert result["approval"]["status"] == "approved"
+    assert "本科生" in result["human_feedback"]
 
 
 def test_validation_normalizes_deepseek_field_variants():

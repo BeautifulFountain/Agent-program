@@ -66,10 +66,16 @@ class Database:
         return [json.loads(row["payload"]) for row in rows]
 
     def delete(self, table: str, item_id: str) -> bool:
-        if table not in {"agents", "workflows"}:
+        if table not in {"agents", "workflows", "runs"}:
             raise ValueError("unsupported table")
         with self._lock, self.connect() as conn:
             result = conn.execute(f"DELETE FROM {table} WHERE id=?", (item_id,))
+        return result.rowcount > 0
+
+    def delete_run(self, run_id: str) -> bool:
+        with self._lock, self.connect() as conn:
+            conn.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+            result = conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
         return result.rowcount > 0
 
     def add_event(self, run_id: str, payload: dict[str, Any]) -> int:

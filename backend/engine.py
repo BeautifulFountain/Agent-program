@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from backend.database import db
+from backend.agent_logic import agent_logic, extract_approval_options
 from backend.llm import llm
 from backend.schemas import utc_now
 
@@ -65,7 +66,7 @@ class RunManager:
         self.tasks: dict[str, asyncio.Task] = {}
         self.cancel_flags: set[str] = set()
 
-    def create(self, task: str, workflow: dict) -> dict:
+    def create(self, task: str, workflow: dict, output_format: str = "markdown") -> dict:
         run_id = uuid4().hex[:12]
         now = utc_now()
         run = {
@@ -73,6 +74,8 @@ class RunManager:
             "status": "queued", "progress": 0, "score": None, "loop_count": 0, "token_usage": 0,
             "started_at": now, "finished_at": None, "created_at": now, "updated_at": now,
             "node_runs": [], "final_output": None, "validation": None, "error": None,
+            "approval": None, "human_feedback": None,
+            "output_format": output_format,
         }
         db.upsert("runs", run_id, run)
         self.tasks[run_id] = asyncio.create_task(self.execute(run_id))
@@ -85,7 +88,7 @@ class RunManager:
         run["updated_at"] = utc_now()
         db.upsert("runs", run["id"], run)
 
-    async def execute(self, run_id: str) -> None:
+    async def execute(self, run_id: str, resume: bool = False) -> None:
         run = db.get("runs", run_id)
         if not run:
             return
@@ -96,7 +99,11 @@ class RunManager:
             workflow = run["workflow_snapshot"]
             nodes = {n["id"]: n for n in workflow["nodes"]}
             completed: dict[str, str] = {}
-            pending = set(nodes)
+            if resume:
+                for node_run in run["node_runs"]:
+                    if node_run["status"] == "completed" and node_run.get("output"):
+                        completed[node_run["node_id"]] = node_run["output"]
+            pending = set(nodes) - completed.keys()
             while pending:
                 self._assert_not_cancelled(run_id)
                 ready = [nodes[node_id] for node_id in pending if set(nodes[node_id]["dependencies"]) <= completed.keys()]
@@ -108,6 +115,19 @@ class RunManager:
                     pending.remove(node["id"])
                 run["progress"] = int(len(completed) / len(nodes) * 90)
                 self.save(run)
+                approval_node = next((node for node in ready if node.get("requires_approval")), None)
+                if approval_node and not run.get("approval"):
+                    run["status"] = "waiting_approval"
+                    run["approval"] = {
+                        "node_id": approval_node["id"],
+                        "status": "pending",
+                        "requested_at": utc_now(),
+                        "feedback": None,
+                        "options": extract_approval_options(completed[approval_node["id"]], run["task"]),
+                    }
+                    self.save(run)
+                    await self.emit(run_id, "run.waiting_approval", {"node_id": approval_node["id"]})
+                    return
 
             validation = normalize_validation(_safe_json(completed["reviewer"]))
             run["validation"] = validation
@@ -118,7 +138,8 @@ class RunManager:
                 await self.emit(run_id, "run.rework", {"loop_count": run["loop_count"], "issues": validation.get("issues", [])})
                 feedback = "\n".join(validation.get("suggestions", []))
                 completed["writer"] = await self._execute_node(run, nodes["writer"], completed, feedback=feedback, rework=True)
-                completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
+                if "fact-checker" in nodes:
+                    completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
                 completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
                 validation = normalize_validation(_safe_json(completed["reviewer"]))
                 run["validation"] = validation
@@ -157,7 +178,11 @@ class RunManager:
         prompt = f"原始任务：{run['task']}\n返工轮次: {run['loop_count']}\n前序成果：\n{dependency_text or '无'}"
         if feedback:
             prompt += f"\n评审反馈：{feedback}\n请针对反馈修订。"
+        if run.get("human_feedback") and node["id"] != "requirements":
+            prompt += f"\n人工确认意见：{run['human_feedback']}\n后续工作必须遵循该意见。"
+        prompt, tool_calls = agent_logic.prepare(node["agent_id"], run["task"], prompt)
         node_run["input"] = prompt
+        node_run["tool_calls"] = tool_calls
         run["node_runs"].append(node_run)
         self.save(run)
         await self.emit(run["id"], "node.started", {"node_id": node["id"], "label": node["label"], "loop": run["loop_count"]})
@@ -200,6 +225,24 @@ class RunManager:
             task.cancel()
             return True
         return False
+
+    def approve(self, run_id: str, feedback: str) -> dict:
+        run = db.get("runs", run_id)
+        if not run:
+            raise ValueError("任务不存在")
+        if run["status"] != "waiting_approval":
+            raise ValueError("任务当前不在等待人工确认状态")
+        run["human_feedback"] = feedback
+        run["approval"] = {
+            **(run.get("approval") or {}),
+            "status": "approved",
+            "feedback": feedback,
+            "approved_at": utc_now(),
+        }
+        run["status"] = "queued"
+        self.save(run)
+        self.tasks[run_id] = asyncio.create_task(self.execute(run_id, resume=True))
+        return run
 
 
 run_manager = RunManager()

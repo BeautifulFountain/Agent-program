@@ -1,24 +1,20 @@
-import { Background, Controls, Handle, MiniMap, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { Bot, GitFork, RotateCcw, Save, ShieldCheck } from 'lucide-react'
+import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { Bot, GitFork, RotateCcw, ShieldCheck } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
-import type { Workflow as WorkflowType } from '../types'
+import type { TaskRun, Workflow as WorkflowType, WorkflowNode } from '../types'
 
-type FlowData = { label: string; kind: string }
-function AgentNode({ data }: NodeProps<Node<FlowData>>) { return <div className={`flow-node ${data.kind === 'validator' ? 'validator' : ''}`}><Handle type="target" position={Position.Left}/><div className="flow-icon">{data.kind === 'validator' ? <ShieldCheck size={17}/> : <Bot size={17}/>}</div><div><strong>{data.label}</strong><span>{data.kind === 'validator' ? '质量验证节点' : 'Agent 执行节点'}</span></div><Handle type="source" position={Position.Right}/></div> }
-
-export default function Workflow() {
-  const [workflow, setWorkflow] = useState<WorkflowType | null>(null)
-  useEffect(() => { api<WorkflowType>('/api/workflows/research-demo').then(setWorkflow) }, [])
-  const nodes = useMemo<Node<FlowData>[]>(() => workflow?.nodes.map(n => ({ id:n.id, position:n.position, data:{label:n.label,kind:n.kind}, type:'agentNode' })) ?? [], [workflow])
-  const edges = useMemo<Edge[]>(() => workflow?.nodes.flatMap(n => n.dependencies.map(dep => ({ id:`${dep}-${n.id}`, source:dep, target:n.id, animated:n.id==='reviewer', style:{stroke:'#7892b0'} }))) ?? [], [workflow])
-  return <>
-    <PageHeader eyebrow="WORKFLOW DESIGNER" title="科研协作工作流" description="DAG驱动的动态调度，支持并行分支、质量验证与自动返工。" actions={<button className="button primary" disabled><Save size={17}/>保存版本</button>}/>
-    <section className="workflow-layout">
-      <div className="canvas-panel"><div className="canvas-toolbar"><span><GitFork size={16}/>版本 v{workflow?.version ?? 1}</span><span className="legend"><i className="agent-dot"/>Agent <i className="validator-dot"/>验证器</span></div><div className="flow-canvas"><ReactFlow nodes={nodes} edges={edges} nodeTypes={{agentNode:AgentNode}} fitView minZoom={0.4} maxZoom={1.5}><Background color="#dbe4ef" gap={20}/><MiniMap pannable zoomable/><Controls/></ReactFlow></div></div>
-      <aside className="config-panel"><span className="eyebrow">RUN POLICY</span><h2>执行策略</h2><div className="config-item"><span>质量阈值</span><strong>{workflow?.quality_threshold ?? 80} 分</strong></div><div className="config-item"><span>最大循环</span><strong>{workflow?.max_loop_count ?? 3} 轮</strong></div><div className="config-item"><span>调度方式</span><strong>依赖就绪 + 并行</strong></div><div className="rework-card"><RotateCcw size={18}/><div><strong>Self-Loop</strong><p>评审分数低于阈值时，携带问题与建议定向返工报告节点。</p></div></div><p className="subtle-note">拖拽编辑与条件边保存将在下一迭代开放；当前工作流已可完整执行。</p></aside>
-    </section>
-  </>
+type FlowData={label:string;kind:string;status?:string}
+function AgentNode({data}:NodeProps<Node<FlowData>>){return <div className={`flow-node ${data.kind==='validator'?'validator':''}`}><Handle type="target" position={Position.Left}/><div className="flow-icon">{data.kind==='validator'?<ShieldCheck size={17}/>:<Bot size={17}/>}</div><div><strong>{data.label}</strong><span>{data.status?`运行状态：${data.status}`:data.kind==='validator'?'质量验证节点':'Agent 执行节点'}</span></div><Handle type="source" position={Position.Right}/></div>}
+function arrange(nodes:WorkflowNode[]){const byId=new Map(nodes.map(node=>[node.id,node]));const depth=new Map<string,number>();const visit=(id:string):number=>{if(depth.has(id))return depth.get(id)!;const node=byId.get(id);const value=!node||!node.dependencies.length?0:Math.max(...node.dependencies.filter(dep=>byId.has(dep)).map(visit),-1)+1;depth.set(id,value);return value};nodes.forEach(node=>visit(node.id));const groups=new Map<number,WorkflowNode[]>();nodes.forEach(node=>{const level=depth.get(node.id)??0;groups.set(level,[...(groups.get(level)??[]),node])});const positions=new Map<string,{x:number;y:number}>();groups.forEach((items,level)=>{const spacing=150;const start=260-((items.length-1)*spacing)/2;items.forEach((node,index)=>positions.set(node.id,{x:45+level*245,y:start+index*spacing}))});return positions}
+export default function Workflow(){
+ const[base,setBase]=useState<WorkflowType|null>(null);const[runs,setRuns]=useState<TaskRun[]>([]);const[selected,setSelected]=useState('template')
+ useEffect(()=>{Promise.all([api<WorkflowType>('/api/workflows/research-demo'),api<TaskRun[]>('/api/runs')]).then(([w,r])=>{setBase(w);setRuns(r)})},[])
+ const run=selected==='template'?null:runs.find(r=>r.id===selected)??null;const workflow=run?.workflow_snapshot??base
+ const nodes=useMemo<Node<FlowData>[]>(()=>{if(!workflow)return[];const positions=arrange(workflow.nodes);return workflow.nodes.map(n=>({id:n.id,position:positions.get(n.id)??n.position,data:{label:n.label,kind:n.kind,status:run?.node_runs.filter(x=>x.node_id===n.id).at(-1)?.status},type:'agentNode'}))},[workflow,run])
+ const edges=useMemo<Edge[]>(()=>workflow?.nodes.flatMap(n=>n.dependencies.map(dep=>({id:`${dep}-${n.id}`,source:dep,target:n.id,animated:run?.status==='running'||n.id==='reviewer',style:{stroke:'#7892b0'}})))??[],[workflow,run])
+ return <><PageHeader eyebrow="WORKFLOW VIEWER" title="任务工作流编排" description="选择默认模板或任一历史任务，查看该任务实际使用的Agent流程快照。" actions={<label className="workflow-select"><span>查看流程</span><select value={selected} onChange={e=>setSelected(e.target.value)}><option value="template">默认工作流模板</option>{runs.map(r=><option key={r.id} value={r.id}>{r.task.slice(0,36)}</option>)}</select></label>}/>
+ <section className="workflow-stack"><div className="policy-bar"><div className="policy-heading"><span className="eyebrow">RUN POLICY</span><strong>{run?'当前任务执行策略':'模板执行策略'}</strong></div>{run&&<div className="policy-task"><strong>{run.task}</strong><span>{run.status} · {workflow?.nodes.length??0} 个节点</span></div>}<div className="policy-stat"><span>质量阈值</span><strong>{workflow?.quality_threshold??80} 分</strong></div><div className="policy-stat"><span>最大循环</span><strong>{workflow?.max_loop_count??3} 轮</strong></div><div className="policy-stat"><span>调度方式</span><strong>依赖就绪 + 并行</strong></div><div className="policy-loop"><RotateCcw size={18}/><div><strong>Self-Loop</strong><span>低于阈值自动返工</span></div></div></div>
+ <div className="canvas-panel"><div className="canvas-toolbar"><span><GitFork size={16}/>{run?`任务 ${run.id.toUpperCase()}`:`模板 v${workflow?.version??1}`}</span><span className="legend"><i className="agent-dot"/>Agent <i className="validator-dot"/>验证器</span></div><div className="flow-canvas flow-canvas-wide"><ReactFlow nodes={nodes} edges={edges} nodeTypes={{agentNode:AgentNode}} fitView fitViewOptions={{padding:.14}} minZoom={.45} maxZoom={1.25}><Background color="#dbe4ef" gap={20}/><Controls/></ReactFlow></div></div></section></>
 }
-

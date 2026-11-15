@@ -43,6 +43,7 @@ class WorkflowNode(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     retry_limit: int = Field(default=1, ge=0, le=5)
     timeout_seconds: int = Field(default=90, ge=5, le=600)
+    requires_approval: bool = False
     position: dict[str, float] = Field(default_factory=dict)
 
 
@@ -64,6 +65,12 @@ class Workflow(WorkflowCreate):
 class RunCreate(BaseModel):
     task: str = Field(min_length=10, max_length=6000)
     workflow_id: str = "research-demo"
+    agent_ids: list[str] = Field(default_factory=list)
+    output_format: Literal["markdown", "document"] = "markdown"
+
+
+class ApprovalRequest(BaseModel):
+    feedback: str = Field(min_length=2, max_length=4000)
 
 
 class RunSummary(BaseModel):

@@ -1,31 +1,22 @@
-import { ArrowRight, CheckCircle2, Clock3, Cpu, Plus, RotateCcw, Workflow as WorkflowIcon } from 'lucide-react'
+import { Activity, ArrowRight, CheckCircle2, Clock3, Cpu, Eye, FlaskConical, Plus, RotateCcw, Trash2, Workflow as WorkflowIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import type { Agent, TaskRun } from '../types'
-
-export default function Dashboard() {
-  const [runs, setRuns] = useState<TaskRun[]>([])
-  const [agents, setAgents] = useState<Agent[]>([])
-  useEffect(() => { Promise.all([api<TaskRun[]>('/api/runs'), api<Agent[]>('/api/agents')]).then(([r, a]) => {setRuns(r); setAgents(a)}).catch(() => {}) }, [])
-  const completed = runs.filter(r => r.status === 'completed')
-  const stats = useMemo(() => [
-    { label: '累计任务', value: runs.length, note: '完整运行记录', icon: WorkflowIcon },
-    { label: '活跃 Agent', value: agents.filter(a => a.status === 'active').length, note: '覆盖研究全流程', icon: Cpu },
-    { label: '任务成功率', value: runs.length ? `${Math.round(completed.length / runs.length * 100)}%` : '—', note: '达到质量阈值', icon: CheckCircle2 },
-    { label: '自动返工', value: runs.reduce((sum, r) => sum + r.loop_count, 0), note: 'Self-Loop 优化次数', icon: RotateCcw },
-  ], [runs, agents, completed.length])
-  return <>
-    <PageHeader eyebrow="OVERVIEW" title="多智能体运行控制台" description="统一观察科研任务的编排、调度、验证和反馈优化过程。" actions={<Link className="button primary" to="/runs/new"><Plus size={17}/>发起任务</Link>}/>
-    <section className="stats-grid" aria-label="运行指标">{stats.map(item => <article className="stat-card" key={item.label}><div className="stat-top"><span>{item.label}</span><item.icon size={18}/></div><strong>{item.value}</strong><small>{item.note}</small></article>)}</section>
-    <div className="dashboard-grid">
-      <section className="panel span-2"><div className="panel-header"><div><h2>最近任务</h2><p>查看执行状态、质量评分与循环次数</p></div><Link to="/runs/new" className="text-link">新建任务 <ArrowRight size={15}/></Link></div>
-        {runs.length ? <div className="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>质量分</th><th>循环</th><th>Token</th><th></th></tr></thead><tbody>{runs.slice(0,6).map(run => <tr key={run.id}><td><strong>{run.task.slice(0,34)}</strong><small>{new Date(run.started_at).toLocaleString()}</small></td><td><StatusBadge status={run.status}/></td><td>{run.score ?? '—'}</td><td>{run.loop_count}</td><td>{run.token_usage}</td><td><Link className="row-link" to={`/runs/${run.id}`}>详情</Link></td></tr>)}</tbody></table></div> : <div className="empty-state"><Clock3/><h3>还没有运行记录</h3><p>从科研问题开始，观察多个Agent如何协同完成任务。</p><Link className="button secondary" to="/runs/new">创建首个任务</Link></div>}
-      </section>
-      <section className="panel"><div className="panel-header"><div><h2>默认工作流</h2><p>科研协作质量闭环</p></div></div><ol className="mini-flow">{['需求澄清','研究规划','并行研究','报告整合','事实核验','质量评审'].map((label, index) => <li key={label}><span>{index+1}</span><div><strong>{label}</strong><small>{index === 2 ? '文献与数据双分支' : index === 5 ? '低于80分自动返工' : '自动调度执行'}</small></div></li>)}</ol><Link className="button tertiary full" to="/workflow">查看工作流</Link></section>
-    </div>
-  </>
+type Health={status:string;environment:string;llm_mode:string};type LlmTest={reply:string;tokens:number;mode:string}
+export default function Dashboard(){
+ const[runs,setRuns]=useState<TaskRun[]>([]);const[agents,setAgents]=useState<Agent[]>([]);const[health,setHealth]=useState<Health|null>(null);const[test,setTest]=useState<LlmTest|null>(null);const[testing,setTesting]=useState(false);const[notice,setNotice]=useState('')
+ const load=()=>Promise.all([api<TaskRun[]>('/api/runs'),api<Agent[]>('/api/agents'),api<Health>('/api/health')]).then(([r,a,h])=>{setRuns(r);setAgents(a);setHealth(h)})
+ useEffect(()=>{load().catch(()=>setNotice('无法读取平台状态'))},[])
+ const completed=runs.filter(r=>r.status==='completed');const terminal=runs.filter(r=>['completed','failed','cancelled','needs_review'].includes(r.status))
+ const stats=useMemo(()=>[{label:'累计任务',value:runs.length,note:'数据库中的运行记录',icon:WorkflowIcon},{label:'活跃 Agent',value:agents.filter(a=>a.status==='active').length,note:'当前可参与调度',icon:Cpu},{label:'任务成功率',value:terminal.length?`${Math.round(completed.length/terminal.length*100)}%`:'—',note:'已结束任务中达标比例',icon:CheckCircle2},{label:'自动返工',value:runs.reduce((s,r)=>s+r.loop_count,0),note:'Self-Loop 累计次数',icon:RotateCcw}],[runs,agents,completed.length,terminal.length])
+ const remove=async(run:TaskRun)=>{if(!confirm(`确定删除任务“${run.task.slice(0,30)}”及全部执行记录吗？`))return;try{await api(`/api/runs/${run.id}`,{method:'DELETE'});await load();setNotice('任务已删除，统计信息已同步更新')}catch(e){setNotice(e instanceof Error?e.message:'删除失败')}}
+ const testModel=async()=>{setTesting(true);setTest(null);setNotice('');try{setTest(await api<LlmTest>('/api/llm/test',{method:'POST'}))}catch(e){setNotice(e instanceof Error?e.message:'模型测试失败')}finally{setTesting(false)}}
+ const flow=['需求澄清与确认','研究规划','并行研究','报告整合','事实核验','质量评审']
+ return <><PageHeader eyebrow="OVERVIEW" title="多智能体运行控制台" description="统一观察任务、Agent、模型连通性、质量验证与反馈优化。" actions={<Link className="button primary" to="/runs/new"><Plus size={17}/>发起任务</Link>}/><section className="stats-grid" aria-label="运行指标">{stats.map(item=><article className="stat-card" key={item.label}><div className="stat-top"><span>{item.label}</span><item.icon size={18}/></div><strong>{item.value}</strong><small>{item.note}</small></article>)}</section>{notice&&<div className="inline-notice" role="status">{notice}</div>}
+ <section className="panel health-strip"><div className="health-title"><Activity size={19}/><div><h2>平台与模型检查</h2><p>直接在平台内完成服务和真实模型验证</p></div></div><div className="health-chip"><span>后端服务</span><strong>{health?.status==='healthy'?'正常':'检查中'}</strong></div><div className="health-chip"><span>运行环境</span><strong>{health?.environment??'—'}</strong></div><div className="health-chip"><span>模型模式</span><strong>{health?.llm_mode??'—'}</strong></div><button className="button secondary" onClick={testModel} disabled={testing}><FlaskConical size={16}/>{testing?'正在调用…':'测试真实模型'}</button>{test&&<div className="test-result compact"><CheckCircle2 size={15}/><div><strong>{test.reply}</strong><small>{test.mode} · {test.tokens} Tokens</small></div></div>}</section>
+ <section className="panel task-panel"><div className="panel-header"><div><h2>任务记录</h2><p>查看详情或删除已结束任务，统计卡片会自动同步</p></div><Link to="/runs/new" className="text-link">新建任务 <ArrowRight size={15}/></Link></div>{runs.length?<div className="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>质量分</th><th>循环</th><th>Token</th><th>操作</th></tr></thead><tbody>{runs.map(run=><tr key={run.id}><td><strong>{run.task.slice(0,58)}</strong><small>{new Date(run.started_at).toLocaleString()}</small></td><td><StatusBadge status={run.status}/></td><td>{run.score??'—'}</td><td>{run.loop_count}</td><td>{run.token_usage}</td><td><div className="table-actions"><Link className="icon-action" aria-label="查看详情" title="查看详情" to={`/runs/${run.id}`}><Eye size={15}/></Link><button className="icon-action danger" aria-label="删除任务" title="删除任务" onClick={()=>remove(run)} disabled={['queued','running','waiting_approval','reworking'].includes(run.status)}><Trash2 size={15}/></button></div></td></tr>)}</tbody></table></div>:<div className="empty-state"><Clock3/><h3>还没有运行记录</h3><p>从科研问题开始，观察多个Agent如何协同完成任务。</p><Link className="button secondary" to="/runs/new">创建首个任务</Link></div>}</section>
+ <section className="panel dashboard-flow"><div className="panel-header"><div><h2>默认工作流</h2><p>人工确认、并行研究与质量返工构成完整闭环</p></div><Link className="text-link" to="/workflow">查看流程图 <ArrowRight size={15}/></Link></div><ol>{flow.map((label,index)=><li key={label}><span>{index+1}</span><strong>{label}</strong>{index<flow.length-1&&<ArrowRight size={15}/>}</li>)}</ol></section></>
 }
-

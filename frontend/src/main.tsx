@@ -4,6 +4,8 @@ import { BrowserRouter } from 'react-router-dom'
 import '@xyflow/react/dist/style.css'
 import './styles.css'
 import './error.css'
+import './approval.css'
+import './management.css'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 

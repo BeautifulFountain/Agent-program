@@ -49,6 +49,16 @@ class LLMService:
                 "issues": ["需要补充关键指标的来源说明"] if score < 80 else [],
                 "suggestions": ["增加数据来源与局限性章节"] if score < 80 else ["质量达标，可形成最终报告"],
             }, ensure_ascii=False)
+        if "需求分析" in system or "需求分析师" in system:
+            choices = [
+                {"id": "scope", "question": "研究对象与覆盖范围？", "type": "single", "options": ["聚焦一个典型群体", "覆盖多个群体并对比", "使用公开资料做宏观研究"]},
+                {"id": "indicators", "question": "优先分析哪些维度？", "type": "multiple", "options": ["现状与频率", "效率与质量", "风险与局限", "改进路径"]},
+                {"id": "evidence", "question": "数据和证据边界？", "type": "single", "options": ["仅使用已提供资料", "设计调研方案但不虚构结果", "结合公开资料并标注待核验来源"]},
+            ]
+            return (
+                "## 研究需求澄清\n\n已识别研究对象、交付目标与关键约束。以下选项需要人工确认，确认后才进入规划阶段。\n\n"
+                "```approval_options\n" + json.dumps(choices, ensure_ascii=False) + "\n```"
+            )
         role = system.split("。", 1)[0].replace("你是", "")
         return (
             f"## {role}阶段成果\n\n"

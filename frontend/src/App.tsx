@@ -9,9 +9,9 @@ import RunDetail from './pages/RunDetail'
 
 const navigation = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
+  { to: '/runs/new', label: '发起任务', icon: PlayCircle },
   { to: '/agents', label: 'Agent 管理', icon: Bot },
   { to: '/workflow', label: '工作流编排', icon: GitBranch },
-  { to: '/runs/new', label: '发起任务', icon: PlayCircle },
 ]
 
 export default function App() {

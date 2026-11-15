@@ -16,6 +16,7 @@ export type WorkflowNode = {
   agent_id: string
   kind: 'agent' | 'validator'
   dependencies: string[]
+  requires_approval?: boolean
   position: { x: number; y: number }
 }
 
@@ -41,12 +42,15 @@ export type NodeRun = {
   retry_count: number
   loop: number
   error: string | null
+  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number;result_count?:number}>
 }
 
 export type TaskRun = {
   id: string
   task: string
   workflow_id: string
+  workflow_snapshot?: Workflow
+  output_format?: 'markdown' | 'document'
   status: string
   progress: number
   score: number | null
@@ -64,6 +68,15 @@ export type TaskRun = {
     dimension_scores?: Record<string, number>
     improvement_suggestions?: string[]
   } | null
+  approval?: {
+    node_id: string
+    status: 'pending' | 'approved'
+    feedback?: string | null
+    requested_at?: string
+    approved_at?: string
+    options?: Array<{id:string;question:string;type:'single'|'multiple';options:string[]}>
+  } | null
+  human_feedback?: string | null
   error: string | null
 }
 
