@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from backend.database import Database, db
-from backend.engine import run_manager
+from backend.engine import normalize_validation, run_manager
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
 from backend.tools import CalculatorTool
@@ -52,4 +52,19 @@ def test_full_research_loop_reaches_threshold():
     assert result["score"] >= 80
     assert result["loop_count"] == 1
     assert len(result["node_runs"]) == 10
+
+
+def test_validation_normalizes_deepseek_field_variants():
+    result = normalize_validation({
+        "score": 82,
+        "dimension_scores": {"完整性": 85},
+        "issues": ["缺少来源"],
+        "improvement_suggestions": ["补充引用"],
+    })
+    assert result == {
+        "score": 82,
+        "dimensions": {"完整性": 85},
+        "issues": ["缺少来源"],
+        "suggestions": ["补充引用"],
+    }
 

@@ -56,7 +56,14 @@ export type TaskRun = {
   finished_at: string | null
   node_runs: NodeRun[]
   final_output: string | null
-  validation: { score: number; issues: string[]; suggestions: string[]; dimensions?: Record<string, number> } | null
+  validation: {
+    score: number
+    issues?: string[]
+    suggestions?: string[]
+    dimensions?: Record<string, number>
+    dimension_scores?: Record<string, number>
+    improvement_suggestions?: string[]
+  } | null
   error: string | null
 }
 

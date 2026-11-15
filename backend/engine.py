@@ -22,6 +22,25 @@ def _safe_json(value: str) -> dict:
         raise RuntimeError("评审Agent未返回有效JSON")
 
 
+def normalize_validation(value: dict) -> dict:
+    """Normalize common reviewer field variants into the platform contract."""
+    dimensions = value.get("dimensions") or value.get("dimension_scores") or {}
+    issues = value.get("issues") or value.get("problems") or []
+    suggestions = value.get("suggestions") or value.get("improvement_suggestions") or []
+    if isinstance(issues, str):
+        issues = [issues]
+    if isinstance(suggestions, str):
+        suggestions = [suggestions]
+    if not isinstance(dimensions, dict):
+        dimensions = {}
+    return {
+        "score": int(value.get("score", value.get("total_score", 0)) or 0),
+        "dimensions": dimensions,
+        "issues": issues if isinstance(issues, list) else [],
+        "suggestions": suggestions if isinstance(suggestions, list) else [],
+    }
+
+
 class RunManager:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task] = {}
@@ -71,7 +90,7 @@ class RunManager:
                 run["progress"] = int(len(completed) / len(nodes) * 90)
                 self.save(run)
 
-            validation = _safe_json(completed["reviewer"])
+            validation = normalize_validation(_safe_json(completed["reviewer"]))
             run["validation"] = validation
             run["score"] = int(validation.get("score", 0))
             while run["score"] < workflow["quality_threshold"] and run["loop_count"] < workflow["max_loop_count"]:
@@ -82,7 +101,7 @@ class RunManager:
                 completed["writer"] = await self._execute_node(run, nodes["writer"], completed, feedback=feedback, rework=True)
                 completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
                 completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
-                validation = _safe_json(completed["reviewer"])
+                validation = normalize_validation(_safe_json(completed["reviewer"]))
                 run["validation"] = validation
                 run["score"] = int(validation.get("score", 0))
                 self.save(run)
