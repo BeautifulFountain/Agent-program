@@ -16,7 +16,13 @@ export default function RunDetail() {
   if(!run) return <div className="loading-panel"><span className="spinner"/>加载运行数据…</div>
   const latest = Object.values(run.node_runs.reduce<Record<string,NodeRun>>((acc,n)=>{acc[`${n.node_id}-${n.loop}`]=n; return acc},{}))
   const dimensions = run.validation?.dimensions ?? run.validation?.dimension_scores ?? {}
-  const issues = run.validation?.issues ?? []
+  const issues = (run.validation?.issues ?? []).map(item => {
+    if (typeof item === 'string') return item
+    const severity = item.severity ? `[${item.severity}] ` : ''
+    const description = item.description ?? '未提供问题描述'
+    const suggestion = item.suggestion ? `；建议：${item.suggestion}` : ''
+    return `${severity}${description}${suggestion}`
+  })
   const suggestions = run.validation?.suggestions ?? run.validation?.improvement_suggestions ?? []
   return <>
     <PageHeader eyebrow={`RUN ${run.id}`} title="任务运行详情" description={run.task} actions={<div className="action-row"><StatusBadge status={run.status}/>{run.status==='running'&&<button className="button danger" onClick={cancel}><Square size={15}/>停止任务</button>}</div>}/>

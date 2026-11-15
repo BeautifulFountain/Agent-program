@@ -58,7 +58,7 @@ export type TaskRun = {
   final_output: string | null
   validation: {
     score: number
-    issues?: string[]
+    issues?: Array<string | { id?: string; severity?: string; description?: string; suggestion?: string }>
     suggestions?: string[]
     dimensions?: Record<string, number>
     dimension_scores?: Record<string, number>

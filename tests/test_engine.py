@@ -68,3 +68,16 @@ def test_validation_normalizes_deepseek_field_variants():
         "suggestions": ["补充引用"],
     }
 
+
+def test_validation_normalizes_structured_issues():
+    result = normalize_validation({
+        "score": 75,
+        "issues": [{
+            "id": "R1",
+            "severity": "中风险",
+            "description": "缺少来源",
+            "suggestion": "补充引用",
+        }],
+    })
+    assert result["issues"] == ["[中风险] 缺少来源；建议：补充引用"]
+

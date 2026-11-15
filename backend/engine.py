@@ -27,17 +27,36 @@ def normalize_validation(value: dict) -> dict:
     dimensions = value.get("dimensions") or value.get("dimension_scores") or {}
     issues = value.get("issues") or value.get("problems") or []
     suggestions = value.get("suggestions") or value.get("improvement_suggestions") or []
-    if isinstance(issues, str):
-        issues = [issues]
-    if isinstance(suggestions, str):
-        suggestions = [suggestions]
+    def string_list(items) -> list[str]:
+        if isinstance(items, str):
+            return [items]
+        if not isinstance(items, list):
+            return []
+        result = []
+        for item in items:
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict):
+                severity = item.get("severity")
+                description = item.get("description") or item.get("issue") or item.get("message")
+                suggestion = item.get("suggestion")
+                text = ""
+                if severity:
+                    text += f"[{severity}] "
+                if description:
+                    text += str(description)
+                if suggestion:
+                    text += f"；建议：{suggestion}"
+                if text:
+                    result.append(text)
+        return result
     if not isinstance(dimensions, dict):
         dimensions = {}
     return {
         "score": int(value.get("score", value.get("total_score", 0)) or 0),
         "dimensions": dimensions,
-        "issues": issues if isinstance(issues, list) else [],
-        "suggestions": suggestions if isinstance(suggestions, list) else [],
+        "issues": string_list(issues),
+        "suggestions": string_list(suggestions),
     }
 
 
