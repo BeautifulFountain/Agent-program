@@ -6,6 +6,7 @@ import Agents from './pages/Agents'
 import Workflow from './pages/Workflow'
 import NewRun from './pages/NewRun'
 import RunDetail from './pages/RunDetail'
+import GlobalAssistant from './components/GlobalAssistant'
 
 const navigation = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
@@ -45,6 +46,7 @@ export default function App() {
       </div>
     </main>
     {open && <button className="overlay" aria-label="关闭导航遮罩" onClick={() => setOpen(false)}/>} 
+    <GlobalAssistant/>
   </div>
 }
 

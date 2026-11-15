@@ -73,6 +73,17 @@ class ApprovalRequest(BaseModel):
     feedback: str = Field(min_length=2, max_length=4000)
 
 
+class AssistantMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=3000)
+
+
+class AssistantChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=3000)
+    history: list[AssistantMessage] = Field(default_factory=list, max_length=12)
+    page: str = Field(default="/", max_length=200)
+
+
 class RunSummary(BaseModel):
     id: str
     task: str

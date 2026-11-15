@@ -6,6 +6,7 @@ import './styles.css'
 import './error.css'
 import './approval.css'
 import './management.css'
+import './assistant.css'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 

@@ -15,7 +15,7 @@ from backend.agent_logic import extract_approval_options
 from backend.database import db
 from backend.engine import run_manager
 from backend.llm import llm
-from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, RunCreate, Workflow, WorkflowCreate, utc_now
+from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
 
 @asynccontextmanager
@@ -43,6 +43,20 @@ def startup() -> None:
 
 def ok(data=None, message="ok") -> ApiResponse:
     return ApiResponse(data=data, message=message)
+
+
+def build_assistant_context() -> str:
+    agents = db.list("agents")
+    runs = db.list("runs")
+    active = [agent["name"] for agent in agents if agent.get("status") == "active"]
+    recent = [{"id": run["id"], "task": run["task"][:100], "status": run["status"], "score": run.get("score"), "progress": run.get("progress"), "loops": run.get("loop_count", 0)} for run in runs[:8]]
+    return json.dumps({
+        "active_agents": active,
+        "agent_count": len(active),
+        "run_count": len(runs),
+        "recent_runs": recent,
+        "workflow": "需求分析与人工确认 → 研究规划 → 文献/数据并行 → 报告撰写 → 事实核验 → 质量评审 → 不达标自动返工",
+    }, ensure_ascii=False)
 
 
 @app.get("/", include_in_schema=False)
@@ -230,4 +244,23 @@ async def test_llm() -> ApiResponse:
         raise HTTPException(404, "接口不存在")
     text, tokens = await llm.complete("你是连通性测试助手。", "请仅回复：连接成功")
     return ok({"reply": text, "tokens": tokens, "mode": "mock" if llm.mock else "deepseek"})
+
+
+@app.post("/api/assistant/chat", response_model=ApiResponse)
+async def assistant_chat(payload: AssistantChatRequest) -> ApiResponse:
+    history = "\n".join(f"{item.role}: {item.content}" for item in payload.history[-8:])
+    prompt = (
+        f"当前页面：{payload.page}\n平台实时摘要：{build_assistant_context()}\n"
+        f"最近对话：\n{history or '无'}\n用户问题：{payload.message}\n"
+        "先判断用户是在普通聊天，还是询问AgentFlow平台。普通聊天自然回答，不要强行提及平台；"
+        "涉及平台时再使用实时摘要，引用任务使用任务名称或ID。请直接给出清晰、有帮助的中文回答，无法确定的信息要明确说明。"
+    )
+    system = (
+        "你是友好、可靠的通用AI智能伙伴，同时也是AgentFlow平台助手。你可以进行日常对话、知识问答、学习辅导、"
+        "写作润色、头脑风暴和代码解释；当用户询问平台时，你熟悉Agent、任务、工作流、人工确认、质量评审和自动返工。"
+        "你能解释全局状态、指导用户操作、帮助拆解科研任务，但不能声称已执行未发生的操作，不能泄露密钥，"
+        "也不能绕过用户确认直接删除任务或启动高成本流程。"
+    )
+    reply, tokens = await llm.complete(system, prompt)
+    return ok({"reply": reply, "tokens": tokens, "mode": "mock" if llm.mock else "deepseek"})
 
