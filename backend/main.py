@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from backend.config import settings
 from backend.database import db
@@ -41,6 +41,11 @@ def startup() -> None:
 
 def ok(data=None, message="ok") -> ApiResponse:
     return ApiResponse(data=data, message=message)
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="http://127.0.0.1:5173", status_code=307)
 
 
 @app.get("/api/health", response_model=ApiResponse)
