@@ -65,7 +65,8 @@ API 文档位于 `http://127.0.0.1:8000/docs`。
 ```powershell
 cd D:\agent_program\frontend
 pnpm install
-pnpm run dev
+cd ..
+.\start-frontend.ps1
 ```
 
 浏览器访问 `http://127.0.0.1:5173`。
