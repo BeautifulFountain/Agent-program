@@ -7,7 +7,7 @@ from backend.engine import normalize_validation, run_manager, select_best_result
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
-from backend.tools import CalculatorTool
+from backend.tools import CalculatorTool, LocalKnowledgeTool
 
 
 def test_workflow_rejects_invalid_threshold():
@@ -30,6 +30,18 @@ def test_calculator_is_safe_and_works():
     assert tool.calculate("(12 + 8) * 2") == 40
     with pytest.raises(ValueError):
         tool.calculate("__import__('os').system('whoami')")
+
+
+def test_chinese_knowledge_retrieval_returns_chunk_metadata(tmp_path):
+    (tmp_path / "policy.md").write_text(
+        "---\ntitle: 数据安全政策\norganization: 测试机构\npublished_at: 2026-01-01\nurl: https://example.com/policy\n---\n\n# 数据分类分级\n科研数据应分类分级并进行访问控制。",
+        encoding="utf-8",
+    )
+    result = LocalKnowledgeTool(str(tmp_path)).search("高校科研数据安全与分类分级", limit=3)
+    assert result
+    assert result[0]["title"] == "数据安全政策"
+    assert result[0]["url"] == "https://example.com/policy"
+    assert "分类分级" in result[0]["snippet"]
 
 
 def test_agents_have_distinct_protocols_and_tools():

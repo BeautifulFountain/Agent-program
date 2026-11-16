@@ -13,6 +13,7 @@ AgentFlow 是一个面向复杂科研任务的多智能体编排、调度、执�
 - SQLite 保存工作流快照、节点输入输出、耗时、评分、Token 与错误
 - SSE 运行事件接口以及前端实时轮询展示
 - DeepSeek OpenAI 兼容接口与无密钥 Mock 演示模式
+- 中文分词与分段召回的本地知识库，返回标题、机构、日期、原始链接和证据片段
 - React Flow 工作流图、控制台、Agent管理、任务发起和运行详情页
 
 ## 系统架构
@@ -90,6 +91,13 @@ cd frontend
 pnpm run build
 ```
 
+真实 DeepSeek 回归测试（会消耗API额度）：
+
+```powershell
+python -m scripts.real_workflow_smoke
+python -m scripts.real_knowledge_smoke
+```
+
 自动化测试默认使用 Mock LLM，不会产生 API 费用。Mock 模式第一轮返回 72 分并触发返工，第二轮返回 88 分，用于稳定演示 Self-Loop。
 
 ## 主要接口
@@ -120,6 +128,6 @@ pnpm run build
 ## 当前边界
 
 - 工作流画布当前用于可视化，编辑保存接口已具备，拖拽持久化将在下一迭代接入。
-- 本地知识库首版支持 Markdown/TXT 关键词检索，尚未引入向量数据库。
+- 本地知识库支持 Markdown/TXT 中文分词、分段评分和来源元数据；当前未引入大型向量数据库，适合比赛原型和小型资料集。
 - 单机 SQLite 适合比赛原型；生产集群需迁移到 PostgreSQL 和任务队列。
 
