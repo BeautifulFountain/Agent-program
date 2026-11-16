@@ -60,6 +60,13 @@ def test_writer_enforces_requested_length_and_revision_rules():
     assert "逐条落实评审意见" in prompt
 
 
+def test_literature_forbids_claiming_local_retrieval_gap_is_research_gap():
+    prompt, _ = agent_logic.prepare("literature", "高校科研管理合规", "基础输入")
+    assert "不得把本地未检出等同于学术研究空白" in prompt
+    assert "禁止写成‘研究空白’" in prompt
+    assert "引用URL必须逐字复制工具结果" in prompt
+
+
 def test_approval_options_parse_and_fallback():
     output = '```approval_options\n[{"id":"scope","question":"范围？","type":"single","options":["本校","全国"]}]\n```'
     parsed = extract_approval_options(output, "测试任务")

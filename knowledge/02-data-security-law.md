@@ -2,7 +2,7 @@
 title: 中华人民共和国数据安全法（科研管理场景摘要）
 organization: 全国人民代表大会常务委员会
 published_at: 2021-06-10
-url: https://flk.npc.gov.cn/detail?fileId=&id=ff80818179f5e0800179f885c7e70392&title=中华人民共和国数据安全法&type=
+url: https://www.gov.cn/xinwen/2021-06/11/content_5616919.htm
 ---
 
 # 核心原则

@@ -1,0 +1,36 @@
+{
+  "model": "deepseek-chat",
+  "threshold": 80,
+  "sample_size": 3,
+  "scenarios": [
+    {
+      "id": "governance",
+      "results": [
+        {"method": "单Agent", "score": 86, "tokens": 3332, "duration_ms": 15086, "success": true},
+        {"method": "固定串行", "score": 82, "tokens": 5257, "duration_ms": 20066, "success": true},
+        {"method": "多Agent动态协作", "score": 88, "tokens": 20523, "duration_ms": 56011, "success": true, "run_id": "7c64929198f3"}
+      ]
+    },
+    {
+      "id": "analysis",
+      "results": [
+        {"method": "单Agent", "score": 88, "tokens": 3245, "duration_ms": 13799, "success": true},
+        {"method": "固定串行", "score": 88, "tokens": 6495, "duration_ms": 22993, "success": true},
+        {"method": "多Agent动态协作", "score": 78, "tokens": 25085, "duration_ms": 68261, "success": false, "run_id": "246c6fec217d"}
+      ]
+    },
+    {
+      "id": "integrity",
+      "results": [
+        {"method": "单Agent", "score": 78, "tokens": 2926, "duration_ms": 12686, "success": false},
+        {"method": "固定串行", "score": 82, "tokens": 5448, "duration_ms": 18787, "success": true},
+        {"method": "多Agent动态协作", "score": 78, "tokens": 23948, "duration_ms": 67352, "success": false, "run_id": "c84319c10ba7"}
+      ]
+    }
+  ],
+  "averages": [
+    {"method": "单Agent", "score": 84.0, "tokens": 3168, "duration_ms": 13857, "success_rate": 0.6667},
+    {"method": "固定串行", "score": 84.0, "tokens": 5733, "duration_ms": 20615, "success_rate": 1.0},
+    {"method": "多Agent动态协作", "score": 81.3, "tokens": 23185, "duration_ms": 63875, "success_rate": 0.3333}
+  ]
+}

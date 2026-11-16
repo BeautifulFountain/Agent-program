@@ -97,7 +97,11 @@ pnpm run build
 python -m scripts.real_workflow_smoke
 python -m scripts.real_knowledge_smoke
 python -m scripts.real_benchmark
+python -m scripts.real_benchmark_suite analysis
+python -m scripts.real_benchmark_suite integrity
 ```
+
+三类真实任务的对比结果与限制见 `docs/benchmark-suite-report.md`，结构化原始指标见 `docs/benchmark-suite-results.json`。
 
 自动化测试默认使用 Mock LLM，不会产生 API 费用。Mock 模式第一轮返回 72 分并触发返工，第二轮返回 88 分，用于稳定演示 Self-Loop。
 
