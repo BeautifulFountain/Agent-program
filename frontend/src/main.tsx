@@ -8,6 +8,8 @@ import './approval.css'
 import './management.css'
 import './assistant.css'
 import './run-detail.css'
+import './acceptance.css'
+import './review.css'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 

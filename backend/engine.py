@@ -129,6 +129,7 @@ class RunManager:
             "started_at": now, "finished_at": None, "created_at": now, "updated_at": now,
             "node_runs": [], "final_output": None, "validation": None, "error": None,
             "approval": None, "human_feedback": None,
+            "final_acceptance": None, "human_rework_count": 0,
             "selected_loop": None, "latest_score": None,
             "output_format": output_format,
         }
@@ -207,7 +208,7 @@ class RunManager:
 
             run["final_output"] = completed.get("writer")
             select_best_result(run)
-            run["status"] = "completed" if run["score"] >= workflow["quality_threshold"] else "needs_review"
+            run["status"] = "completed"
             run["progress"] = 100
             run["finished_at"] = utc_now()
             self.save(run)
@@ -312,6 +313,70 @@ class RunManager:
         run["status"] = "queued"
         self.save(run)
         self.tasks[run_id] = asyncio.create_task(self.execute(run_id, resume=True))
+        return run
+
+    def request_final_rework(self, run_id: str, feedback: str, agent_ids: list[str]) -> dict:
+        run = self._final_review_run(run_id)
+        workflow_ids = {node["id"] for node in run["workflow_snapshot"]["nodes"]}
+        selected = [agent_id for agent_id in agent_ids if agent_id in workflow_ids]
+        if not selected:
+            raise ValueError("请选择当前工作流中的返工Agent")
+        run["human_rework_count"] = int(run.get("human_rework_count", 0)) + 1
+        run["final_acceptance"] = {
+            "status": "revision_requested", "feedback": feedback, "agent_ids": selected,
+            "requested_at": utc_now(),
+        }
+        run["status"] = "reworking"
+        self.save(run)
+        self.tasks[run_id] = asyncio.create_task(self._execute_final_rework(run_id, feedback, selected))
+        return run
+
+    async def _execute_final_rework(self, run_id: str, feedback: str, selected: list[str]) -> None:
+        run = db.get("runs", run_id)
+        if not run:
+            return
+        try:
+            nodes = {node["id"]: node for node in run["workflow_snapshot"]["nodes"]}
+            completed: dict[str, str] = {}
+            for item in run.get("node_runs", []):
+                if item.get("status") == "completed" and item.get("output"):
+                    completed[item["node_id"]] = item["output"]
+            previous_draft = completed.get("writer", run.get("final_output") or "")
+            run["loop_count"] = int(run.get("loop_count", 0)) + 1
+            order = ["planner", "literature", "analyst"]
+            for node_id in order:
+                if node_id in selected and node_id in nodes:
+                    completed[node_id] = await self._execute_node(run, nodes[node_id], completed, feedback=feedback, rework=True)
+            completed["writer"] = await self._execute_node(
+                run, nodes["writer"], completed, feedback=feedback, rework=True, previous_output=previous_draft,
+            )
+            if "fact-checker" in nodes:
+                completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
+            completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
+            run["validation"] = normalize_validation(_safe_json(completed["reviewer"]))
+            run["score"] = run["validation"]["score"]
+            run["final_output"] = completed["writer"]
+            run["latest_score"] = run["score"]
+            run["selected_loop"] = run["loop_count"]
+            run["status"] = "completed"
+            run["final_acceptance"] = {
+                **(run.get("final_acceptance") or {}), "status": "revised", "ready_at": utc_now(),
+            }
+            run["finished_at"] = utc_now()
+            self.save(run)
+            await self.emit(run_id, "run.completed", {"status": run["status"], "score": run["score"]})
+        except Exception as exc:
+            run["status"] = "failed"
+            run["error"] = str(exc)[:500]
+            run["finished_at"] = utc_now()
+            self.save(run)
+
+    def _final_review_run(self, run_id: str) -> dict:
+        run = db.get("runs", run_id)
+        if not run:
+            raise ValueError("任务不存在")
+        if run["status"] not in {"completed", "waiting_final_acceptance", "needs_review"}:
+            raise ValueError("只有已完成任务可以提交人工返工")
         return run
 
 

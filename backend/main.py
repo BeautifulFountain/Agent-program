@@ -15,7 +15,7 @@ from backend.agent_logic import extract_approval_options
 from backend.database import db
 from backend.engine import run_manager, select_best_result
 from backend.llm import llm
-from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, RunCreate, Workflow, WorkflowCreate, utc_now
+from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, FinalReworkRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
 
 @asynccontextmanager
@@ -134,7 +134,12 @@ async def update_workflow(workflow_id: str, payload: WorkflowCreate) -> ApiRespo
 
 @app.get("/api/runs", response_model=ApiResponse)
 async def list_runs() -> ApiResponse:
-    return ok(db.list("runs"))
+    runs = db.list("runs")
+    for run in runs:
+        if run.get("status") in {"needs_review", "waiting_final_acceptance"}:
+            run["status"] = "completed"
+            db.upsert("runs", run["id"], run)
+    return ok(runs)
 
 
 @app.post("/api/runs", response_model=ApiResponse, status_code=202)
@@ -187,6 +192,9 @@ async def get_run(run_id: str) -> ApiResponse:
         db.upsert("runs", run_id, run)
     if run.get("status") in {"completed", "needs_review"} and select_best_result(run):
         db.upsert("runs", run_id, run)
+    if run.get("status") in {"needs_review", "waiting_final_acceptance"}:
+        run["status"] = "completed"
+        db.upsert("runs", run_id, run)
     return ok(run)
 
 
@@ -219,6 +227,13 @@ async def approve_run(run_id: str, payload: ApprovalRequest) -> ApiResponse:
     return ok(run, "人工意见已确认，任务继续执行")
 
 
+@app.post("/api/runs/{run_id}/request-rework", response_model=ApiResponse)
+async def request_run_rework(run_id: str, payload: FinalReworkRequest) -> ApiResponse:
+    try:
+        run = run_manager.request_final_rework(run_id, payload.feedback, payload.agent_ids)
+    except ValueError as exc:
+        raise HTTPException(409 if db.get("runs", run_id) else 404, str(exc)) from exc
+    return ok(run, "人工修改意见已提交，任务开始定向返工")
 @app.get("/api/runs/{run_id}/events")
 async def stream_events(run_id: str, request: Request):
     if not db.get("runs", run_id):
@@ -232,7 +247,7 @@ async def stream_events(run_id: str, request: Request):
                 last_id = event["event_id"]
                 yield f"id: {last_id}\nevent: {event['type']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             run = db.get("runs", run_id)
-            if run and run["status"] in {"completed", "failed", "cancelled", "needs_review"} and not events:
+            if run and run["status"] in {"completed", "failed", "cancelled", "needs_review", "waiting_final_acceptance"} and not events:
                 break
             yield ": heartbeat\n\n"
             await asyncio.sleep(0.5)

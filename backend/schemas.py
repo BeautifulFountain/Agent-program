@@ -73,6 +73,11 @@ class ApprovalRequest(BaseModel):
     feedback: str = Field(min_length=2, max_length=4000)
 
 
+class FinalReworkRequest(BaseModel):
+    feedback: str = Field(min_length=2, max_length=4000)
+    agent_ids: list[str] = Field(default_factory=list, min_length=1, max_length=10)
+
+
 class AssistantMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=3000)

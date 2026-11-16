@@ -80,6 +80,8 @@ export type TaskRun = {
     options?: Array<{id:string;question:string;type:'single'|'multiple';options:string[]}>
   } | null
   human_feedback?: string | null
+  human_rework_count?: number
+  final_acceptance?: {status:'revision_requested'|'revised';feedback?:string;agent_ids?:string[];requested_at?:string;ready_at?:string} | null
   error: string | null
 }
 
