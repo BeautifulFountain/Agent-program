@@ -1,0 +1,11 @@
+{
+  "experiment_date": "2026-11-16",
+  "model": "deepseek-chat",
+  "threshold": 80,
+  "sample_size": 1,
+  "results": [
+    {"method": "single_agent", "score": 86, "success": true, "tokens": 3332, "duration_ms": 15086, "output_chars": 1753},
+    {"method": "fixed_serial", "score": 82, "success": true, "tokens": 5257, "duration_ms": 20066, "output_chars": 1407},
+    {"method": "multi_agent", "score": 88, "success": true, "tokens": 20523, "duration_ms": 56011, "output_chars": 1730, "run_id": "7c64929198f3"}
+  ]
+}
