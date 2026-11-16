@@ -11,11 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from backend.config import settings
-from backend.agent_logic import extract_approval_options
+from backend.agent_logic import agent_logic, extract_approval_options
 from backend.database import db
 from backend.engine import run_manager, select_best_result
 from backend.llm import llm
-from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, FinalReworkRequest, RunCreate, Workflow, WorkflowCreate, utc_now
+from backend.routing import recommend_agents
+from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, DispatchRecommendationRequest, FinalReworkRequest, KnowledgeDocumentCreate, KnowledgeSearchRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
 
 @asynccontextmanager
@@ -72,6 +73,58 @@ async def health() -> ApiResponse:
 @app.get("/api/agents", response_model=ApiResponse)
 async def list_agents() -> ApiResponse:
     return ok(db.list("agents"))
+
+
+@app.post("/api/dispatch/recommend", response_model=ApiResponse)
+async def recommend_dispatch(payload: DispatchRecommendationRequest) -> ApiResponse:
+    available = {agent["id"] for agent in db.list("agents") if agent.get("status") == "active"}
+    return ok(recommend_agents(payload.task, available), "已生成离线动态调度建议")
+
+
+@app.get("/api/knowledge", response_model=ApiResponse)
+async def list_knowledge() -> ApiResponse:
+    return ok(agent_logic.knowledge.list_documents())
+
+
+@app.post("/api/knowledge", response_model=ApiResponse, status_code=201)
+async def create_knowledge(payload: KnowledgeDocumentCreate) -> ApiResponse:
+    try:
+        document = agent_logic.knowledge.add_document(
+            payload.filename,
+            payload.content,
+            {"title": payload.title, "organization": payload.organization, "published_at": payload.published_at, "url": payload.url},
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return ok(document, "知识文档已加入本地知识库")
+
+
+@app.post("/api/knowledge/search", response_model=ApiResponse)
+async def search_knowledge(payload: KnowledgeSearchRequest) -> ApiResponse:
+    return ok(agent_logic.knowledge.search(payload.query, payload.limit))
+
+
+@app.get("/api/knowledge/{document_id}", response_model=ApiResponse)
+async def get_knowledge(document_id: str) -> ApiResponse:
+    try:
+        return ok(agent_logic.knowledge.read_document(document_id))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.delete("/api/knowledge/{document_id}", response_model=ApiResponse)
+async def delete_knowledge(document_id: str) -> ApiResponse:
+    try:
+        deleted = agent_logic.knowledge.delete_document(document_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, "知识文档不存在")
+    return ok({"id": document_id}, "知识文档已删除")
 
 
 @app.post("/api/agents", response_model=ApiResponse, status_code=201)

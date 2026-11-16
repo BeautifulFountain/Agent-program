@@ -44,6 +44,31 @@ def test_chinese_knowledge_retrieval_returns_chunk_metadata(tmp_path):
     assert "分类分级" in result[0]["snippet"]
 
 
+def test_knowledge_documents_can_be_added_previewed_searched_and_deleted(tmp_path):
+    tool = LocalKnowledgeTool(str(tmp_path / "knowledge"))
+    created = tool.add_document(
+        "research-note.md",
+        "# 研究方法\n\n分层抽样应记录分层变量、抽样框和各层样本量。",
+        {"title": "抽样方法说明", "organization": "测试实验室", "published_at": "2026-11-16", "url": "https://example.com/method"},
+    )
+    assert created["title"] == "抽样方法说明"
+    documents = tool.list_documents()
+    assert len(documents) == 1 and documents[0]["editable"] is True
+    assert tool.search("分层抽样和样本量", limit=3)[0]["title"] == "抽样方法说明"
+    assert tool.delete_document(created["id"]) is True
+    assert tool.list_documents() == []
+
+
+def test_builtin_knowledge_document_cannot_be_deleted(tmp_path):
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    (root / "protected.md").write_text("# 内置资料\n\n受保护内容", encoding="utf-8")
+    tool = LocalKnowledgeTool(str(root))
+    document_id = tool.list_documents()[0]["id"]
+    with pytest.raises(PermissionError):
+        tool.delete_document(document_id)
+
+
 def test_agents_have_distinct_protocols_and_tools():
     requirements_prompt, requirement_tools = agent_logic.prepare("requirements", "统计大学生使用AI的情况", "基础输入")
     analyst_prompt, analyst_tools = agent_logic.prepare("analyst", "统计大学生使用AI的情况", "基础输入")
@@ -65,6 +90,22 @@ def test_literature_forbids_claiming_local_retrieval_gap_is_research_gap():
     assert "不得把本地未检出等同于学术研究空白" in prompt
     assert "禁止写成‘研究空白’" in prompt
     assert "引用URL必须逐字复制工具结果" in prompt
+
+
+def test_methodology_task_keeps_policy_sources_out_of_method_evidence():
+    prompt, _ = agent_logic.prepare("literature", "设计数据分析方案，包括变量定义、数据清洗和统计方法", "基础输入")
+    assert "政策法规资料只能说明数据处理边界" in prompt
+    assert "当前知识库未提供方法学证据" in prompt
+
+
+def test_fact_checker_and_reviewer_have_feedback_budgets():
+    fact_prompt, fact_tools = agent_logic.prepare("fact-checker", "高校科研数据安全治理", "基础输入")
+    review_prompt, _ = agent_logic.prepare("reviewer", "研究任务", "基础输入")
+    assert "最多6个" in fact_prompt
+    assert "不超过1200字" in fact_prompt
+    assert "事实核验独立检索结果" in fact_prompt
+    assert fact_tools[0]["tool"] == "local_knowledge_recheck"
+    assert "分别最多6项" in review_prompt
 
 
 def test_approval_options_parse_and_fallback():

@@ -69,6 +69,24 @@ class RunCreate(BaseModel):
     output_format: Literal["markdown", "document"] = "markdown"
 
 
+class KnowledgeDocumentCreate(BaseModel):
+    filename: str = Field(min_length=3, max_length=160)
+    content: str = Field(min_length=1, max_length=500_000)
+    title: str = Field(default="", max_length=200)
+    organization: str = Field(default="", max_length=200)
+    published_at: str = Field(default="", max_length=40)
+    url: str = Field(default="", max_length=1000)
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class DispatchRecommendationRequest(BaseModel):
+    task: str = Field(min_length=10, max_length=6000)
+
+
 class ApprovalRequest(BaseModel):
     feedback: str = Field(min_length=2, max_length=4000)
 

@@ -14,6 +14,9 @@ AgentFlow 是一个面向复杂科研任务的多智能体编排、调度、执�
 - SSE 运行事件接口以及前端实时轮询展示
 - DeepSeek OpenAI 兼容接口与无密钥 Mock 演示模式
 - 中文分词与分段召回的本地知识库，返回标题、机构、日期、原始链接和证据片段
+- 知识库管理页面支持 Markdown/TXT 上传、预览、删除和独立检索测试，内置 16 份治理与研究方法资料
+- 动态 Agent 推荐根据任务特征选择协作角色，并同步生成运行流程快照
+- 事实核验 Agent 使用原始任务独立复检知识库证据，核验与评审反馈均限制为最多 6 项
 - React Flow 工作流图、控制台、Agent管理、任务发起和运行详情页
 
 ## 系统架构
@@ -57,6 +60,8 @@ LLM_MOCK=false
 .\start-backend.ps1
 ```
 
+需要不消耗 API 余额地验证完整流程时，运行 `.\start-backend.ps1 -Mock`。若默认端口被占用，可显式指定端口，例如 `.\start-backend.ps1 -Mock -Port 8010`。
+
 API 文档位于 `http://127.0.0.1:8000/docs`。
 
 ### 2. 前端
@@ -71,6 +76,8 @@ cd ..
 ```
 
 浏览器访问 `http://127.0.0.1:5173`。
+
+若默认端口被占用，可使用 `.\start-frontend.ps1 -Port 5180`。启动脚本启用严格端口检查，不会悄悄切换到另一个地址。
 
 ### 3. 在 VS Code 中运行
 
@@ -90,6 +97,15 @@ python -m pytest -q
 cd frontend
 pnpm run build
 ```
+
+三类复杂场景各重复 3 次的隔离 Mock 稳定性基准：
+
+```powershell
+cd D:\agent_program
+python scripts\run_mock_benchmark.py
+```
+
+该脚本使用临时 SQLite 数据库，不会污染页面任务，也不会消耗 API 余额。结果写入 `docs/mock-benchmark-report.md` 和 `docs/mock-benchmark-results.json`。
 
 真实 DeepSeek 回归测试（会消耗API额度）：
 
@@ -114,6 +130,10 @@ python -m scripts.real_benchmark_suite integrity
 | `PUT/DELETE /api/agents/{id}` | Agent 更新和删除 |
 | `GET/POST /api/workflows` | 工作流查询和创建 |
 | `PUT /api/workflows/{id}` | 工作流版本更新 |
+| `POST /api/dispatch/recommend` | 按任务特征动态推荐 Agent |
+| `GET/POST /api/knowledge` | 知识资料查询和新增 |
+| `POST /api/knowledge/search` | 独立检索测试 |
+| `GET/DELETE /api/knowledge/{id}` | 资料预览和删除 |
 | `POST /api/runs` | 创建任务并启动调度 |
 | `GET /api/runs/{id}` | 查询完整运行快照 |
 | `POST /api/runs/{id}/cancel` | 取消运行 |

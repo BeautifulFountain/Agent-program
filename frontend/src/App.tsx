@@ -1,4 +1,4 @@
-import { Activity, Bot, Boxes, FlaskConical, GitBranch, LayoutDashboard, Menu, PlayCircle, X } from 'lucide-react'
+import { Activity, BookOpen, Bot, Boxes, FlaskConical, GitBranch, LayoutDashboard, Menu, PlayCircle, X } from 'lucide-react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { useState } from 'react'
 import Dashboard from './pages/Dashboard'
@@ -7,11 +7,13 @@ import Workflow from './pages/Workflow'
 import NewRun from './pages/NewRun'
 import RunDetail from './pages/RunDetail'
 import GlobalAssistant from './components/GlobalAssistant'
+import Knowledge from './pages/Knowledge'
 
 const navigation = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
   { to: '/runs/new', label: '发起任务', icon: PlayCircle },
   { to: '/agents', label: 'Agent 管理', icon: Bot },
+  { to: '/knowledge', label: '知识库管理', icon: BookOpen },
   { to: '/workflow', label: '工作流编排', icon: GitBranch },
 ]
 
@@ -32,13 +34,14 @@ export default function App() {
     <main>
       <header className="topbar">
         <button className="menu-button icon-button" aria-label="打开导航" onClick={() => setOpen(true)}><Menu size={21}/></button>
-        <div className="context"><FlaskConical size={16}/><span>科研任务协作空间</span></div>
+        <div className="context"><FlaskConical size={16}/><span><strong>AgentFlow</strong><em>多智能体编排平台</em></span></div>
         <div className="system-chip"><Activity size={15}/><span>系统正常</span></div>
       </header>
       <div className="content">
         <Routes>
           <Route path="/" element={<Dashboard/>}/>
           <Route path="/agents" element={<Agents/>}/>
+          <Route path="/knowledge" element={<Knowledge/>}/>
           <Route path="/workflow" element={<Workflow/>}/>
           <Route path="/runs/new" element={<NewRun/>}/>
           <Route path="/runs/:id" element={<RunDetail/>}/>

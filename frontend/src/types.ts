@@ -42,7 +42,26 @@ export type NodeRun = {
   retry_count: number
   loop: number
   error: string | null
-  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number;result_count?:number}>
+  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number|string;result_count?:number;results?:KnowledgeSearchResult[]}>
+}
+
+export type KnowledgeDocument = {
+  id: string; title: string; organization: string; published_at: string; url: string
+  filename: string; path?: string; size?: number; characters?: number; chunks?: number
+  editable: boolean; updated_at?: string; content?: string
+}
+
+export type KnowledgeSearchResult = {
+  source: string; title: string; organization: string; published_at: string
+  url: string; chunk: string; score: string; snippet: string
+}
+
+export type DispatchRecommendation = {
+  agent_ids: string[]
+  reasons: Record<string,string>
+  matched_keywords: Record<string,string[]>
+  strategy: string
+  llm_called: boolean
 }
 
 export type TaskRun = {

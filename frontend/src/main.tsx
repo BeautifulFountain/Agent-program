@@ -10,6 +10,8 @@ import './assistant.css'
 import './run-detail.css'
 import './acceptance.css'
 import './review.css'
+import './knowledge.css'
+import './global-layout.css'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 

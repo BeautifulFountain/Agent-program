@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
 import operator
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 class LocalKnowledgeTool:
@@ -49,7 +53,7 @@ class LocalKnowledgeTool:
         if not self.root.exists():
             return matches
         for path in self.root.rglob("*"):
-            if path.suffix.lower() not in {".txt", ".md"}:
+            if path.suffix.lower() not in {".txt", ".md"} or path.name.lower() == "readme.md":
                 continue
             raw = path.read_text(encoding="utf-8", errors="ignore")
             metadata, text = self._metadata(raw, path)
@@ -71,6 +75,82 @@ class LocalKnowledgeTool:
             if len(selected) >= limit:
                 break
         return selected
+
+    def _document_id(self, path: Path) -> str:
+        relative = path.resolve().relative_to(self.root.resolve()).as_posix()
+        return base64.urlsafe_b64encode(relative.encode("utf-8")).decode("ascii").rstrip("=")
+
+    def _path_from_id(self, document_id: str) -> Path:
+        padding = "=" * (-len(document_id) % 4)
+        try:
+            relative = base64.urlsafe_b64decode(document_id + padding).decode("utf-8")
+        except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+            raise ValueError("知识文档标识无效") from exc
+        candidate = (self.root / relative).resolve()
+        root = self.root.resolve()
+        if root not in candidate.parents or candidate.suffix.lower() not in {".md", ".txt"}:
+            raise ValueError("知识文档路径无效")
+        return candidate
+
+    def list_documents(self) -> list[dict]:
+        documents = []
+        if not self.root.exists():
+            return documents
+        for path in sorted(self.root.rglob("*")):
+            if path.suffix.lower() not in {".md", ".txt"} or path.name.lower() == "readme.md":
+                continue
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+            metadata, body = self._metadata(raw, path)
+            relative = path.resolve().relative_to(self.root.resolve())
+            documents.append({
+                "id": self._document_id(path), **metadata, "filename": path.name,
+                "path": relative.as_posix(), "size": path.stat().st_size,
+                "characters": len(body), "chunks": len(self._chunks(body)),
+                "editable": "uploads" in relative.parts,
+                "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+            })
+        return documents
+
+    def read_document(self, document_id: str) -> dict:
+        path = self._path_from_id(document_id)
+        if not path.exists():
+            raise FileNotFoundError("知识文档不存在")
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        metadata, body = self._metadata(raw, path)
+        relative = path.resolve().relative_to(self.root.resolve())
+        return {"id": document_id, **metadata, "filename": path.name, "content": body, "editable": "uploads" in relative.parts}
+
+    def add_document(self, filename: str, content: str, metadata: dict[str, str]) -> dict:
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".md", ".txt"}:
+            raise ValueError("首版仅支持 Markdown 与 TXT 文件")
+        if not content.strip():
+            raise ValueError("知识文档内容不能为空")
+        if len(content) > 500_000:
+            raise ValueError("单个知识文档不能超过50万字符")
+        safe_stem = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff_-]+", "-", Path(filename).stem).strip("-")[:60] or "document"
+        folder = self.root / "uploads"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{safe_stem}-{uuid4().hex[:8]}{suffix}"
+        title = metadata.get("title", "").strip() or Path(filename).stem
+        header = (
+            "---\n" f"title: {title}\n"
+            f"organization: {metadata.get('organization', '').strip()}\n"
+            f"published_at: {metadata.get('published_at', '').strip()}\n"
+            f"url: {metadata.get('url', '').strip()}\n" "---\n\n"
+        )
+        path.write_text(header + content.strip() + "\n", encoding="utf-8")
+        return self.read_document(self._document_id(path))
+
+    def delete_document(self, document_id: str) -> bool:
+        path = self._path_from_id(document_id)
+        relative = path.resolve().relative_to(self.root.resolve())
+        if "uploads" not in relative.parts:
+            raise PermissionError("内置知识文档受保护，不能在页面中删除")
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
 
 
 class CalculatorTool:

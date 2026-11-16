@@ -32,5 +32,16 @@
     {"method": "单Agent", "score": 84.0, "tokens": 3168, "duration_ms": 13857, "success_rate": 0.6667},
     {"method": "固定串行", "score": 84.0, "tokens": 5733, "duration_ms": 20615, "success_rate": 1.0},
     {"method": "多Agent动态协作", "score": 81.3, "tokens": 23185, "duration_ms": 63875, "success_rate": 0.3333}
+  ],
+  "retests": [
+    {
+      "scenario": "analysis",
+      "change": "在首次质量评分前强制执行事实核验修订与复核",
+      "results": [
+        {"method": "单Agent", "score": 86, "tokens": 3352, "duration_ms": 15684, "success": true},
+        {"method": "固定串行", "score": 86, "tokens": 6215, "duration_ms": 22163, "success": true},
+        {"method": "多Agent动态协作", "score": 72, "tokens": 41543, "duration_ms": 97865, "success": false, "run_id": "a9c5a8155f32"}
+      ]
+    }
   ]
 }

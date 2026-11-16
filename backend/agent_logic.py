@@ -49,14 +49,14 @@ PROTOCOLS: dict[str, AgentProtocol] = {
     "fact-checker": AgentProtocol(
         "逐项核验报告的事实、逻辑、来源和约束一致性。",
         "读取报告与所有上游证据。",
-        "输出核验表：声明、核验状态、证据、风险级别、修改建议。",
-        ("覆盖关键结论", "标出无证据声明", "检查数字和术语前后一致"),
+        "输出精简核验表：最多6个会影响结论、合规或任务验收的问题；每项包含位置、风险级别、证据和一条可直接执行的修改建议。低价值措辞偏好不列入。",
+        ("优先阻断性问题", "标出无证据声明", "检查数字和术语前后一致", "总输出不超过1200字"),
     ),
     "reviewer": AgentProtocol(
         "依据统一量表对完整成果做独立质量评审。",
         "读取报告、核验结果、需求与人工确认意见。",
-        "仅输出JSON：score、dimensions、issues、suggestions。dimensions至少含完整性、逻辑性、可验证性、约束符合度。",
-        ("总分0到100", "问题必须具体可定位", "建议必须能驱动下一轮返工"),
+        "仅输出JSON：score、dimensions、issues、suggestions。dimensions至少含完整性、逻辑性、可验证性、约束符合度；issues和suggestions分别最多6项，只保留影响验收的关键问题。",
+        ("总分0到100", "问题必须具体可定位", "建议必须能驱动下一轮返工", "不得用大量低风险项淹没关键缺陷"),
     ),
 }
 
@@ -72,8 +72,16 @@ class AgentLogic:
         tool_context = ""
         if agent_id == "literature":
             matches = self.knowledge.search(task, limit=5)
-            tool_calls.append({"tool": "local_knowledge", "query": task, "result_count": len(matches)})
+            tool_calls.append({"tool": "local_knowledge", "query": task, "result_count": len(matches), "results": matches})
             tool_context = "\n\n[本地知识库检索结果]\n" + (json.dumps(matches, ensure_ascii=False) if matches else "未检索到匹配资料；必须明确说明资料不足，不得虚构来源。")
+        elif agent_id == "fact-checker":
+            matches = self.knowledge.search(task, limit=5)
+            tool_calls.append({"tool": "local_knowledge_recheck", "query": task, "result_count": len(matches), "results": matches})
+            tool_context = (
+                "\n\n[事实核验独立检索结果]\n"
+                + (json.dumps(matches, ensure_ascii=False) if matches else "独立复检未命中资料；不得把未命中写成事实错误，只能标记证据不足。")
+                + "\n请将报告声明与本次独立检索结果逐项对照，不得仅复述文献Agent的判断。"
+            )
         elif agent_id == "analyst":
             threshold_ratio = self.calculator.calculate("80 / 100")
             tool_calls.append({"tool": "calculator", "expression": "80 / 100", "result": threshold_ratio})
@@ -104,12 +112,23 @@ class AgentLogic:
                 "对无直接来源支撑的一般性判断使用审慎限定，不得把建议、假设或示例写成已验证事实。"
                 "返工时逐条落实评审意见，同时删除造成同类问题的旧表述。"
             )
+            if "上一版完整报告" in base_prompt:
+                prompt += (
+                    "\n本次为受约束修订：优先处理高风险和中风险意见；通过替换、删除或压缩原文完成修订，"
+                    "不得用不断追加段落的方式修补。修订后的篇幅仍必须满足原始任务字数范围。"
+                )
         elif agent_id == "literature":
             prompt += (
                 "\n检索范围仅代表当前本地知识库；若未命中资料，只能写‘当前检索资料未覆盖’，"
                 "禁止写成‘研究空白’或‘尚无研究’。引用URL必须逐字复制工具结果，不得缩写为网站首页、"
                 "补造条款号或改写链接。"
             )
+            if any(term in task for term in ("数据分析方案", "变量定义", "数据清洗", "描述统计", "组间比较", "统计方法")):
+                prompt += (
+                    "\n当前任务的核心是统计方法设计。政策法规资料只能说明数据处理边界，不能作为抽样、"
+                    "检验方法或效应量选择的证据。若知识库没有方法学资料，明确写‘当前知识库未提供方法学证据’，"
+                    "不要为了形成引用而加入与分析方法无关的政策来源。"
+                )
         return prompt, tool_calls
 
 

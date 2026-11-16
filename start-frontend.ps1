@@ -1,6 +1,8 @@
 param(
     [switch]$Lint,
-    [switch]$Build
+    [switch]$Build,
+    [ValidateRange(1024, 65535)]
+    [int]$Port = 5173
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +26,6 @@ if ($Lint) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $nodePath ".\node_modules\vite\bin\vite.js" "build"
 } else {
-    & $nodePath ".\node_modules\vite\bin\vite.js" --host 127.0.0.1 --port 5173
+    & $nodePath ".\node_modules\vite\bin\vite.js" --host 127.0.0.1 --port $Port --strictPort
 }
 
