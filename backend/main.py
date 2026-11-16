@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from backend.config import settings
 from backend.agent_logic import extract_approval_options
 from backend.database import db
-from backend.engine import run_manager
+from backend.engine import run_manager, select_best_result
 from backend.llm import llm
 from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
@@ -184,6 +184,8 @@ async def get_run(run_id: str) -> ApiResponse:
     if run.get("status") == "waiting_approval" and run.get("approval") and not run["approval"].get("options"):
         requirement = next((item for item in reversed(run.get("node_runs", [])) if item.get("node_id") == "requirements"), None)
         run["approval"]["options"] = extract_approval_options((requirement or {}).get("output") or "", run["task"])
+        db.upsert("runs", run_id, run)
+    if run.get("status") in {"completed", "needs_review"} and select_best_result(run):
         db.upsert("runs", run_id, run)
     return ok(run)
 

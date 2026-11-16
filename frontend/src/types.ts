@@ -54,6 +54,8 @@ export type TaskRun = {
   status: string
   progress: number
   score: number | null
+  selected_loop?: number | null
+  latest_score?: number | null
   loop_count: number
   token_usage: number
   started_at: string
@@ -64,8 +66,9 @@ export type TaskRun = {
     score: number
     issues?: Array<string | { id?: string; severity?: string; description?: string; suggestion?: string }>
     suggestions?: string[]
-    dimensions?: Record<string, number>
-    dimension_scores?: Record<string, number>
+    dimensions?: Record<string, number | { score?: number; value?: number; comment?: string }>
+    dimension_scores?: Record<string, number | { score?: number; value?: number; comment?: string }>
+    dimension_comments?: Record<string, string>
     improvement_suggestions?: string[]
   } | null
   approval?: {

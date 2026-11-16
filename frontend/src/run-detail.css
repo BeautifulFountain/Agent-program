@@ -1,0 +1,35 @@
+.confirmation-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 12px;
+  padding: 11px;
+  border: 1px solid #bfe7d9;
+  border-radius: 8px;
+  background: #effaf6;
+  color: #096b58;
+}
+
+.confirmation-note > svg { flex: 0 0 auto; margin-top: 1px; }
+.confirmation-note strong, .confirmation-note span { display: block; }
+.confirmation-note strong { font-size: 11px; }
+.confirmation-note span { margin-top: 3px; font-size: 10px; line-height: 1.5; }
+.confirmation-note p {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid #caeadf;
+  color: #315f56;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.score-selection-note {
+  margin: 0 0 13px;
+  padding: 10px;
+  border: 1px solid #d7e3ef;
+  border-radius: 7px;
+  background: #f3f7fb;
+  color: #47627c;
+  font-size: 10px;
+  line-height: 1.55;
+}

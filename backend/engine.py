@@ -51,14 +51,68 @@ def normalize_validation(value: dict) -> dict:
                 if text:
                     result.append(text)
         return result
-    if not isinstance(dimensions, dict):
-        dimensions = {}
+    normalized_dimensions: dict[str, int] = {}
+    dimension_comments: dict[str, str] = {}
+    if isinstance(dimensions, dict):
+        for name, item in dimensions.items():
+            raw_score = item
+            if isinstance(item, dict):
+                raw_score = item.get("score", item.get("value", 0))
+                if item.get("comment"):
+                    dimension_comments[str(name)] = str(item["comment"])
+            try:
+                normalized_dimensions[str(name)] = max(0, min(100, int(float(raw_score or 0))))
+            except (TypeError, ValueError):
+                normalized_dimensions[str(name)] = 0
     return {
         "score": int(value.get("score", value.get("total_score", 0)) or 0),
-        "dimensions": dimensions,
+        "dimensions": normalized_dimensions,
+        "dimension_comments": dimension_comments,
         "issues": string_list(issues),
         "suggestions": string_list(suggestions),
     }
+
+
+def select_best_result(run: dict) -> bool:
+    """Select the highest-scoring reviewed draft without deleting the audit trail."""
+    reviewer_runs = [
+        item for item in run.get("node_runs", [])
+        if item.get("node_id") == "reviewer" and item.get("status") == "completed" and item.get("output")
+    ]
+    candidates: list[tuple[int, int, dict, dict]] = []
+    for review in reviewer_runs:
+        try:
+            validation = normalize_validation(_safe_json(review["output"]))
+        except (RuntimeError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        candidates.append((int(validation["score"]), int(review.get("loop", 0)), validation, review))
+    if not candidates:
+        return False
+
+    best_score, best_loop, best_validation, _ = max(candidates, key=lambda item: (item[0], -item[1]))
+    latest_score = max(candidates, key=lambda item: item[1])[0]
+    writer_runs = [
+        item for item in run.get("node_runs", [])
+        if item.get("node_id") == "writer" and item.get("status") == "completed"
+        and int(item.get("loop", 0)) == best_loop and item.get("output")
+    ]
+    if not writer_runs:
+        return False
+
+    best_output = writer_runs[-1]["output"]
+    changed = any([
+        run.get("score") != best_score,
+        run.get("latest_score") != latest_score,
+        run.get("selected_loop") != best_loop,
+        run.get("final_output") != best_output,
+        run.get("validation") != best_validation,
+    ])
+    run["score"] = best_score
+    run["latest_score"] = latest_score
+    run["selected_loop"] = best_loop
+    run["final_output"] = best_output
+    run["validation"] = best_validation
+    return changed
 
 
 class RunManager:
@@ -75,6 +129,7 @@ class RunManager:
             "started_at": now, "finished_at": None, "created_at": now, "updated_at": now,
             "node_runs": [], "final_output": None, "validation": None, "error": None,
             "approval": None, "human_feedback": None,
+            "selected_loop": None, "latest_score": None,
             "output_format": output_format,
         }
         db.upsert("runs", run_id, run)
@@ -136,8 +191,12 @@ class RunManager:
                 self._assert_not_cancelled(run_id)
                 run["loop_count"] += 1
                 await self.emit(run_id, "run.rework", {"loop_count": run["loop_count"], "issues": validation.get("issues", [])})
-                feedback = "\n".join(validation.get("suggestions", []))
-                completed["writer"] = await self._execute_node(run, nodes["writer"], completed, feedback=feedback, rework=True)
+                feedback = "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])])
+                previous_draft = completed.get("writer", "")
+                completed["writer"] = await self._execute_node(
+                    run, nodes["writer"], completed, feedback=feedback, rework=True,
+                    previous_output=previous_draft,
+                )
                 if "fact-checker" in nodes:
                     completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
                 completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
@@ -147,6 +206,7 @@ class RunManager:
                 self.save(run)
 
             run["final_output"] = completed.get("writer")
+            select_best_result(run)
             run["status"] = "completed" if run["score"] >= workflow["quality_threshold"] else "needs_review"
             run["progress"] = 100
             run["finished_at"] = utc_now()
@@ -164,7 +224,10 @@ class RunManager:
             self.save(run)
             await self.emit(run_id, "run.failed", {"error": run["error"]})
 
-    async def _execute_node(self, run: dict, node: dict, completed: dict[str, str], feedback: str = "", rework: bool = False) -> str:
+    async def _execute_node(
+        self, run: dict, node: dict, completed: dict[str, str], feedback: str = "",
+        rework: bool = False, previous_output: str = "",
+    ) -> str:
         agent = db.get("agents", node["agent_id"])
         if not agent:
             raise RuntimeError(f"找不到Agent：{node['agent_id']}")
@@ -176,6 +239,13 @@ class RunManager:
         }
         dependency_text = "\n\n".join(f"[{key}]\n{completed[key]}" for key in node["dependencies"] if key in completed)
         prompt = f"原始任务：{run['task']}\n返工轮次: {run['loop_count']}\n前序成果：\n{dependency_text or '无'}"
+        if previous_output:
+            prompt += (
+                "\n上一版完整报告：\n" + previous_output
+                + "\n请保留上一版中正确且已验证的内容，只针对反馈做可追踪的增量修订，不要从头重写。"
+            )
+        if node["id"] == "reviewer" and "writer" not in node["dependencies"] and completed.get("writer"):
+            prompt += f"\n待评审的完整报告正文：\n{completed['writer']}"
         if feedback:
             prompt += f"\n评审反馈：{feedback}\n请针对反馈修订。"
         if run.get("human_feedback") and node["id"] != "requirements":
@@ -197,7 +267,7 @@ class RunManager:
                 run["token_usage"] += tokens
                 node_run.update(status="completed", output=output, retry_count=attempt, finished_at=utc_now())
                 if node["kind"] == "validator":
-                    node_run["score"] = _safe_json(output).get("score")
+                    node_run["score"] = normalize_validation(_safe_json(output))["score"]
                 break
             except Exception as exc:
                 error = str(exc)

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from backend.database import Database, db
-from backend.engine import normalize_validation, run_manager
+from backend.engine import normalize_validation, run_manager, select_best_result
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
@@ -89,9 +89,19 @@ def test_validation_normalizes_deepseek_field_variants():
     assert result == {
         "score": 82,
         "dimensions": {"完整性": 85},
+        "dimension_comments": {},
         "issues": ["缺少来源"],
         "suggestions": ["补充引用"],
     }
+
+
+def test_validation_normalizes_dimension_objects():
+    result = normalize_validation({
+        "score": 72,
+        "dimensions": {"事实准确性": {"score": 68, "comment": "引用仍需核对"}},
+    })
+    assert result["dimensions"] == {"事实准确性": 68}
+    assert result["dimension_comments"] == {"事实准确性": "引用仍需核对"}
 
 
 def test_validation_normalizes_structured_issues():
@@ -105,4 +115,22 @@ def test_validation_normalizes_structured_issues():
         }],
     })
     assert result["issues"] == ["[中风险] 缺少来源；建议：补充引用"]
+
+
+def test_best_result_selects_matching_writer_version():
+    run = {
+        "score": 62,
+        "final_output": "第四版报告",
+        "node_runs": [
+            {"node_id": "writer", "status": "completed", "loop": 0, "output": "第一版报告"},
+            {"node_id": "reviewer", "status": "completed", "loop": 0, "output": '{"score":78,"dimensions":{"完整性":80}}'},
+            {"node_id": "writer", "status": "completed", "loop": 3, "output": "第四版报告"},
+            {"node_id": "reviewer", "status": "completed", "loop": 3, "output": '{"score":62,"dimensions":{"完整性":60}}'},
+        ],
+    }
+    assert select_best_result(run) is True
+    assert run["score"] == 78
+    assert run["latest_score"] == 62
+    assert run["selected_loop"] == 0
+    assert run["final_output"] == "第一版报告"
 
