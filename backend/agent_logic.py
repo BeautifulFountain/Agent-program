@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from backend.tools import CalculatorTool, LocalKnowledgeTool
@@ -77,6 +78,17 @@ class AgentLogic:
             threshold_ratio = self.calculator.calculate("80 / 100")
             tool_calls.append({"tool": "calculator", "expression": "80 / 100", "result": threshold_ratio})
             tool_context = f"\n\n[结构化计算工具]\n质量阈值比例={threshold_ratio}。这只是平台参数，不是研究数据；需要真实数值时必须给出公式和数据需求。"
+        elif agent_id == "writer":
+            length_match = re.search(r"(?:约|控制在|不超过|不少于)?\s*(\d{3,5})\s*字", task)
+            if length_match:
+                target = int(length_match.group(1))
+                lower = max(200, int(target * 0.9))
+                upper = int(target * 1.1)
+                tool_context = (
+                    f"\n\n[硬性交付约束]\n目标篇幅为约{target}字，正文必须控制在{lower}至{upper}字。"
+                    "优先合并重复章节和免责声明，不得通过附录、说明或重复总结变相超长。"
+                    "输出前自行估算篇幅；只输出最终Markdown正文，不要输出写作过程、自检说明或额外解释。"
+                )
         if not protocol:
             return base_prompt + "\n请严格依据你的角色、能力标签和工具完成任务，并清楚标注假设与局限。", tool_calls
         checks = "；".join(protocol.checks)
@@ -86,6 +98,12 @@ class AgentLogic:
             f"输出规范：{protocol.output_contract}\n完成前自检：{checks}\n"
             "必须遵守以上协议；不要越权代替其他Agent，也不要省略规定字段。"
         )
+        if agent_id == "writer":
+            prompt += (
+                "\n报告中的术语必须统一；每项核心结论需与人工确认范围对应。"
+                "对无直接来源支撑的一般性判断使用审慎限定，不得把建议、假设或示例写成已验证事实。"
+                "返工时逐条落实评审意见，同时删除造成同类问题的旧表述。"
+            )
         return prompt, tool_calls
 
 

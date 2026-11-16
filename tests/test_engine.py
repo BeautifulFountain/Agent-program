@@ -41,6 +41,13 @@ def test_agents_have_distinct_protocols_and_tools():
     assert analyst_tools[0]["tool"] == "calculator"
 
 
+def test_writer_enforces_requested_length_and_revision_rules():
+    prompt, _ = agent_logic.prepare("writer", "撰写一份约1000字研究简报", "基础输入")
+    assert "900至1100字" in prompt
+    assert "只输出最终Markdown正文" in prompt
+    assert "逐条落实评审意见" in prompt
+
+
 def test_approval_options_parse_and_fallback():
     output = '```approval_options\n[{"id":"scope","question":"范围？","type":"single","options":["本校","全国"]}]\n```'
     parsed = extract_approval_options(output, "测试任务")
@@ -115,6 +122,16 @@ def test_validation_normalizes_structured_issues():
         }],
     })
     assert result["issues"] == ["[中风险] 缺少来源；建议：补充引用"]
+
+
+def test_validation_normalizes_deepseek_problem_and_action_fields():
+    result = normalize_validation({
+        "score": 88,
+        "issues": [{"location": "背景第3句", "problem": "缺少法规名称", "severity": "中"}],
+        "suggestions": [{"target": "背景第3句", "action": "补充可核验法规名称"}],
+    })
+    assert result["issues"] == ["[中] 背景第3句：缺少法规名称"]
+    assert result["suggestions"] == ["背景第3句：补充可核验法规名称"]
 
 
 def test_best_result_selects_matching_writer_version():

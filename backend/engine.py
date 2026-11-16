@@ -39,11 +39,17 @@ def normalize_validation(value: dict) -> dict:
                 result.append(item)
             elif isinstance(item, dict):
                 severity = item.get("severity")
-                description = item.get("description") or item.get("issue") or item.get("message")
+                location = item.get("location") or item.get("target")
+                description = (
+                    item.get("description") or item.get("issue") or item.get("message")
+                    or item.get("problem") or item.get("action") or item.get("comment")
+                )
                 suggestion = item.get("suggestion")
                 text = ""
                 if severity:
                     text += f"[{severity}] "
+                if location:
+                    text += f"{location}："
                 if description:
                     text += str(description)
                 if suggestion:
