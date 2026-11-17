@@ -8,6 +8,12 @@ test_agentflow.db
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
+*.log
+coverage/
+htmlcov/
+.coverage
+knowledge/uploads/
+knowledge/external/*.tmp
 frontend/vite.config.js
 frontend/vite.config.d.ts
 .vscode/*

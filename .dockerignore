@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.env
+.pytest_cache
+**/__pycache__
+**/*.pyc
+agentflow.db
+test_agentflow.db
+frontend/node_modules
+frontend/dist
+docs
+tests
+*.log
+*.tsbuildinfo
