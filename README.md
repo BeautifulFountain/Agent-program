@@ -142,8 +142,8 @@ agentflow/
 ├─ backend/                 FastAPI、调度引擎、Agent 与知识检索
 ├─ frontend/                React 前端
 ├─ knowledge/               内置和动态收录的知识资料
-├─ docs/                    架构、演示和项目说明
-├─ scripts/                 知识库扩充与真实模型验收脚本
+├─ docs/                    技术架构说明
+├─ scripts/                 知识库扩充工具
 ├─ tests/                   后端自动化测试
 ├─ .env.example             环境变量模板
 ├─ docker-compose.yml       容器化部署入口
@@ -160,16 +160,6 @@ python -m pytest -q
 cd frontend
 pnpm lint
 pnpm build
-```
-
-固定演示任务：
-
-> 撰写一份约 5000 字的科研方法报告，分析大语言模型在文献数据库检索、主题归纳、研究空白识别和综述写作中的应用价值与局限，并提出一套可复现的人机协作文献综述流程。要求说明检索策略、来源筛选、引用核验、幻觉控制和人工复核机制，引用可核验的经典综述与学术资料。
-
-真实模型验收会产生 API 费用：
-
-```bash
-python scripts/run_fixed_demo.py
 ```
 
 ## 主要接口
