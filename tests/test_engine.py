@@ -201,7 +201,7 @@ def test_database_round_trip(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="完整异步集成测试需要允许本地 socketpair 的运行环境")
-def test_full_research_loop_reaches_threshold():
+def test_full_research_loop_applies_delivery_gate():
     async def scenario():
         db.initialize()
         seed_defaults(db)
@@ -218,7 +218,16 @@ def test_full_research_loop_reaches_threshold():
 
     result = asyncio.run(scenario())
     assert result["status"] == "completed"
-    assert result["score"] >= 80
+    reviewer_scores = [
+        item["score"] for item in result["node_runs"]
+        if item["node_id"] == "reviewer" and item.get("score") is not None
+    ]
+    assert max(reviewer_scores) >= 80
+    # The mock reviewer reaches its nominal threshold, but its deliberately short
+    # draft has no usable references. The deterministic delivery gate must retain
+    # the lower audited score instead of reporting a false pass.
+    assert result["score"] == 69
+    assert result["validation"]["critical_flags"]["missing_required_deliverable"] is True
     assert result["loop_count"] == 1
     assert len(result["node_runs"]) == 10
     assert result["approval"]["status"] == "approved"
