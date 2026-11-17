@@ -20,8 +20,14 @@ PROTOCOLS: dict[str, AgentProtocol] = {
     "requirements": AgentProtocol(
         "把宽泛任务转化为可确认、可验收的研究需求。",
         "读取原始任务，不假设用户未提供的范围、样本或数据来源。",
-        "必须包含：问题定义、研究范围、约束、交付标准、待人工确认问题。最后追加一个```approval_options代码块，内容为JSON数组；每项包含id、question、type(single/multiple)、options字符串数组，提供2至4个可直接勾选的合理选项。",
-        ("显式列出歧义", "不得伪造数据", "确认项必须可由用户直接回答"),
+        (
+            "必须包含：问题定义、研究范围、约束、交付标准、待人工确认问题。先提取原始任务中已经明确的要求，"
+            "不得重复询问，也不得擅自增加学科范围、引用格式、文献数量、数据来源或附加交付物。"
+            "只对会实质影响执行且原任务尚未说明的歧义提问，最多3组；任务已经足够明确时应提供“按原要求执行，不增加额外限制”。"
+            "最后追加一个```approval_options代码块，内容为JSON数组；每项包含id、question、type(single/multiple)、"
+            "options字符串数组，提供2至4个可直接勾选的合理选项。"
+        ),
+        ("显式列出真正未决的歧义", "已明确要求不得重复确认", "不得伪造数据", "确认项必须可由用户直接回答", "自定义人工意见优先级最高"),
     ),
     "planner": AgentProtocol(
         "把已确认需求拆成带依赖、产物和验收条件的执行计划。",
@@ -82,24 +88,63 @@ class AgentLogic:
         self.knowledge = LocalKnowledgeTool()
         self.calculator = CalculatorTool()
         self.external = ExternalKnowledgeService(self.knowledge)
+        self.search_plans: dict[str, list[dict]] = {}
+
+    async def plan_searches(self, task: str) -> tuple[list[dict], int]:
+        """Create task-specific scholarly queries and machine-checkable relevance groups."""
+        try:
+            from backend.llm import llm
+            system = (
+                "你是学术数据库检索规划器。仅输出JSON，不回答研究问题。根据任务生成2至3条英文检索式。"
+                "每条检索式必须包含query和must_include_groups；must_include_groups是二维字符串数组，"
+                "每组表示同义概念，候选文献必须在标题或摘要中命中每一组中的至少一个词。"
+                "不同检索式可分别覆盖核心主题、研究方法或权威标准。不得写作者、年份或不存在的论文题名。"
+            )
+            prompt = f"研究任务：{task}\n输出格式：{{\"searches\":[{{\"query\":\"...\",\"must_include_groups\":[[\"term a\",\"synonym\"],[\"term b\"]]}}]}}"
+            raw, tokens = await llm.complete(system, prompt, json_mode=True)
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                start, end = raw.find("{"), raw.rfind("}")
+                value = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+            return self.external.normalize_searches(value, task), tokens
+        except Exception:
+            return self.external.default_searches(task), 0
+
+    def task_matches(self, task: str, limit: int = 8) -> tuple[str, list[dict]]:
+        searches = self.search_plans.get(task) or self.external.default_searches(task)
+        accepted: dict[str, dict] = {}
+        for search in searches:
+            candidates = self.knowledge.search(search["query"], limit=15)
+            for item in candidates:
+                if self.external.relevant_to_search(item.get("title", ""), item.get("snippet", ""), search):
+                    accepted[f"{item.get('source')}:{item.get('chunk')}"] = item
+        ranked = sorted(accepted.values(), key=lambda item: int(item.get("score", 0)), reverse=True)
+        return " | ".join(search["query"] for search in searches), ranked[:limit]
 
     async def prepare_async(self, agent_id: str, task: str, base_prompt: str) -> tuple[str, list[dict]]:
         """Enrich the literature node with durable external evidence before local retrieval."""
         external_call = None
         if agent_id == "literature":
-            external_call = await self.external.search_and_ingest(task)
+            searches, planning_tokens = await self.plan_searches(task)
+            self.search_plans[task] = searches
+            external_call = await self.external.search_and_ingest(task, searches)
+            external_call["planning_tokens"] = planning_tokens
         prompt, tool_calls = self.prepare(agent_id, task, base_prompt)
         if external_call is not None:
             tool_calls.insert(0, {
-                "tool": "external_knowledge_search", "query": task,
+                "tool": "external_knowledge_search", "query": task, "search_query": external_call.get("search_query"),
                 "providers": external_call.get("providers", []), "found": external_call.get("found", 0),
                 "result_count": len(external_call.get("imported", [])), "results": external_call.get("imported", []),
-                "duplicates": external_call.get("duplicates", 0), "errors": external_call.get("errors", []),
+                "duplicates": external_call.get("duplicates", 0), "discarded_irrelevant": external_call.get("discarded_irrelevant", 0),
+                "token_usage": external_call.get("planning_tokens", 0),
+                "errors": external_call.get("errors", []),
             })
             summary = (
-                f"\n\n[外部检索入库审计]\n已检索：{', '.join(external_call.get('providers', [])) or '未启用'}；"
+                f"\n\n[外部检索入库审计]\n聚焦检索式：{external_call.get('search_query') or task}；"
+                f"已检索：{', '.join(external_call.get('providers', [])) or '未启用'}；"
                 f"发现{external_call.get('found', 0)}条，新增入库{len(external_call.get('imported', []))}条，"
-                f"去重{external_call.get('duplicates', 0)}条。"
+                f"去重{external_call.get('duplicates', 0)}条，过滤偏题资料{external_call.get('discarded_irrelevant', 0)}条。"
             )
             if external_call.get("errors"):
                 summary += "部分服务不可用：" + "；".join(external_call["errors"])
@@ -111,12 +156,12 @@ class AgentLogic:
         tool_calls: list[dict] = []
         tool_context = ""
         if agent_id == "literature":
-            matches = self.knowledge.search(task, limit=5)
-            tool_calls.append({"tool": "local_knowledge", "query": task, "result_count": len(matches), "results": matches})
+            focused_query, matches = self.task_matches(task)
+            tool_calls.append({"tool": "local_knowledge", "query": focused_query, "result_count": len(matches), "results": matches})
             tool_context = "\n\n[本地知识库检索结果]\n" + (json.dumps(matches, ensure_ascii=False) if matches else "未检索到匹配资料；必须明确说明资料不足，不得虚构来源。")
         elif agent_id == "fact-checker":
-            matches = self.knowledge.search(task, limit=5)
-            tool_calls.append({"tool": "local_knowledge_recheck", "query": task, "result_count": len(matches), "results": matches})
+            focused_query, matches = self.task_matches(task)
+            tool_calls.append({"tool": "local_knowledge_recheck", "query": focused_query, "result_count": len(matches), "results": matches})
             tool_context = (
                 "\n\n[事实核验独立检索结果]\n"
                 + (json.dumps(matches, ensure_ascii=False) if matches else "独立复检未命中资料；不得把未命中写成事实错误，只能标记证据不足。")
@@ -156,6 +201,14 @@ class AgentLogic:
                 "报告中的术语必须统一；每项核心结论需与人工确认范围对应。"
                 "对无直接来源支撑的一般性判断使用审慎限定，不得把建议、假设或示例写成已验证事实。"
                 "返工时逐条落实评审意见，同时删除造成同类问题的旧表述。"
+                "参考文献必须来自前序证据；有效来源不少于3条时，正文和参考文献必须实际使用至少3条与任务直接相关的来源，"
+                "有效来源不足3条时使用全部有效来源。正文采用[1][2]格式标注，文末统一使用“## 参考文献”标题，"
+                "每条严格按“[序号] 作者. 题名[文献类型]. 期刊或机构, 年份. DOI或完整URL.”格式独占一段。"
+                "禁止在参考文献条目后追加证据等级、摘要级信息、唯一来源、检索说明或核验说明。"
+                "禁止列出正文未使用的装饰性文献，也不得省略全部引用。"
+                "参考文献章节只能列出真实文献条目，禁止写入检索失败原因、引用策略、人工确认意见、核验过程、"
+                "尚待补充事项或‘后续版本将’之类计划。任何用户要求和评审意见都只能转化为报告内容与结构，"
+                "不得原样复述为正文，也不得向读者解释系统如何完成任务。"
             )
             if "上一版完整报告" in base_prompt:
                 prompt += (
@@ -168,6 +221,8 @@ class AgentLogic:
                 "\n检索范围仅代表当前本地知识库；若未命中资料，只能写‘当前检索资料未覆盖’，"
                 "禁止写成‘研究空白’或‘尚无研究’。引用URL必须逐字复制工具结果，不得缩写为网站首页、"
                 "补造条款号或改写链接。"
+                "只保留能够直接支撑当前研究问题的资料；仅命中宽泛上位主题、却未覆盖任务核心对象与方法的文献必须剔除，"
+                "不得为了凑满证据数量加入任何其他领域或其他研究对象的偏题材料。有效来源不足时如实报告数量。"
             )
             if any(term in task for term in ("数据分析方案", "变量定义", "数据清洗", "描述统计", "组间比较", "统计方法")):
                 prompt += (

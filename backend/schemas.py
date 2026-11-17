@@ -101,10 +101,16 @@ class AssistantMessage(BaseModel):
     content: str = Field(min_length=1, max_length=3000)
 
 
+class AssistantImage(BaseModel):
+    name: str = Field(default="粘贴图片", max_length=120)
+    data_url: str = Field(min_length=30, max_length=7_000_000)
+
+
 class AssistantChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=3000)
     history: list[AssistantMessage] = Field(default_factory=list, max_length=12)
     page: str = Field(default="/", max_length=200)
+    images: list[AssistantImage] = Field(default_factory=list, max_length=3)
 
 
 class RunSummary(BaseModel):

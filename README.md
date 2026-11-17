@@ -52,6 +52,9 @@ Copy-Item .env.example .env
 LLM_API_KEY=你的密钥
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
+VISION_API_KEY=可选_视觉模型密钥
+VISION_BASE_URL=可选_OpenAI兼容视觉模型地址
+VISION_MODEL=可选_支持image_url的视觉模型名
 LLM_MOCK=false
 ```
 
@@ -62,8 +65,10 @@ EXTERNAL_SEARCH_ENABLED=true
 OPENALEX_API_KEY=可选_OpenAlex密钥
 CROSSREF_MAILTO=可选_联系邮箱
 BRAVE_SEARCH_API_KEY=可选_Brave网页搜索密钥
-EXTERNAL_SEARCH_LIMIT=4
+EXTERNAL_SEARCH_LIMIT=6
 ```
+
+智能伙伴的纯文字对话继续使用 `LLM_MODEL`。如需在输入框粘贴或选择图片并进行真实识别，还需配置支持 OpenAI `image_url` 消息格式的 `VISION_MODEL`；未配置时平台会明确提示，不会把图片当作普通文本伪识别。单次最多上传 3 张图片，每张不超过 5MB，支持 PNG、JPG、WEBP 和 GIF。
 
 文献 Agent 执行时会并行检索外部服务，按 DOI 或 URL 去重后写入 `knowledge/external/`，再通过本地检索向模型提供证据。外部服务失败不会中断任务，错误会保留在工具调用审计中。
 

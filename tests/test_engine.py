@@ -4,13 +4,13 @@ import sys
 import pytest
 
 from backend.database import Database, db
-from backend.engine import clean_report_output, evaluate_deliverable, normalize_validation, rework_improved, run_manager, select_best_result
+from backend.engine import clean_report_output, enforce_deliverable_validation, evaluate_deliverable, normalize_validation, rework_agent_ids, rework_improved, run_manager, select_best_result
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
 from backend.tools import CalculatorTool, LocalKnowledgeTool
 from backend.report_export import build_report_docx
-from backend.external_knowledge import ExternalRecord, _openalex_abstract
+from backend.external_knowledge import ExternalKnowledgeService, ExternalRecord, _openalex_abstract
 
 
 def test_workflow_rejects_invalid_threshold():
@@ -91,9 +91,39 @@ def test_external_evidence_is_deduplicated_by_stable_identity(tmp_path):
     assert _openalex_abstract({"科研": [1], "智能": [0]}) == "智能 科研"
 
 
+def test_literature_review_search_focus_and_relevance_filter():
+    task = "分析大语言模型在文献数据检索、主题归纳、研究空白识别和综述写作中的价值与局限"
+    query = ExternalKnowledgeService.focus_query(task)
+    assert "systematic literature review" in query
+    assert len(ExternalKnowledgeService.focus_queries(task)) == 2
+    assert ExternalKnowledgeService.relevant_to_task(task, "Large language models for systematic literature reviews") is True
+    assert ExternalKnowledgeService.relevant_to_task(task, "PRISMA 2020 statement for systematic reviews") is True
+    assert ExternalKnowledgeService.relevant_to_task(task, 'Review for "Large language models for literature reviews"') is False
+    assert ExternalKnowledgeService.relevant_to_task(task, "大语言模型在文本情感分析中的应用研究") is False
+    assert ExternalKnowledgeService.relevant_to_task(task, "AI大模型在景区中的应用研究") is False
+
+
+def test_generic_search_plan_normalizes_concept_groups():
+    task = "研究计算机视觉在工业缺陷检测中的方法"
+    searches = ExternalKnowledgeService.normalize_searches({"searches": [{
+        "query": "computer vision industrial defect detection review",
+        "must_include_groups": [["computer vision", "visual inspection"], ["defect detection", "defect inspection"]],
+    }]}, task)
+    assert len(searches) == 1
+    assert ExternalKnowledgeService.relevant_to_search(
+        "Computer vision for industrial defect detection: a review", "", searches[0]
+    ) is True
+    assert ExternalKnowledgeService.relevant_to_search(
+        "Computer vision for medical image segmentation", "", searches[0]
+    ) is False
+
+
 def test_literature_async_prepare_records_external_ingestion(monkeypatch):
-    async def fake_search(_: str):
+    async def fake_plan(_: str):
+        return ([{"query": "artificial intelligence research governance", "must_include_groups": []}], 10)
+    async def fake_search(_: str, _searches):
         return {"providers": ["OpenAlex"], "found": 2, "imported": [{"id": "x", "provider": "OpenAlex", "title": "论文", "url": "https://example.com"}], "duplicates": 1, "errors": []}
+    monkeypatch.setattr(agent_logic, "plan_searches", fake_plan)
     monkeypatch.setattr(agent_logic.external, "search_and_ingest", fake_search)
     coroutine = agent_logic.prepare_async("literature", "人工智能科研治理", "基础输入")
     try:
@@ -123,6 +153,13 @@ def test_writer_enforces_requested_length_and_revision_rules():
     assert "逐条落实评审意见" in prompt
     assert "可直接交付的科研报告" in prompt
     assert "全文只说明一次" in prompt
+
+
+def test_requirements_only_asks_unresolved_questions():
+    prompt, _ = agent_logic.prepare("requirements", "撰写约5000字科研方法报告，引用可核验学术资料", "基础输入")
+    assert "不得重复询问" in prompt
+    assert "最多3组" in prompt
+    assert "按原要求执行，不增加额外限制" in prompt
 
 
 def test_literature_forbids_claiming_local_retrieval_gap_is_research_gap():
@@ -326,6 +363,46 @@ def test_report_cleanup_removes_process_labels():
     assert "正式报告" in value and "专业正文" in value
 
 
+def test_report_cleanup_removes_fake_reference_narrative():
+    value = clean_report_output(
+        "# 正式报告\n\n## 结论\n\n研究结论。\n\n## 参考来源\n\n"
+        "本报告的引用策略遵循人工确认意见。后续版本将补充代表性文献。"
+    )
+    assert "参考来源" not in value
+    assert "后续版本" not in value
+
+
+def test_report_cleanup_keeps_only_numbered_formal_references():
+    value = clean_report_output(
+        "# 报告\n\n## 参考来源\n\n1. Author. Valid paper[J]. Journal, 2024. https://example.com/a\n"
+        "- 本报告仅依据摘要信息，后续版本将继续核验。"
+    )
+    assert "## 参考文献" in value
+    assert "[1] Author. Valid paper[J]. Journal, 2024. https://example.com/a" in value
+    assert "摘要信息" not in value
+
+
+def test_deterministic_gate_caps_zero_citation_report():
+    run = {"task": "研究任务", "node_runs": [{"tool_calls": [{"tool": "local_knowledge", "results": [{
+        "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"
+    }]}]}]}
+    validation = {"score": 92, "issues": [], "suggestions": [], "critical_flags": {}}
+    result = enforce_deliverable_validation(run, validation, "# 报告\n\n## 摘要\n\n没有引用。")
+    assert result["score"] == 69
+    assert result["critical_flags"]["unverifiable_core_citations"] is True
+    assert any("未实际使用" in item for item in result["issues"])
+
+
+def test_review_feedback_routes_to_responsible_upstream_agents():
+    validation = {
+        "issues": ["引用来源与主题不相关", "统计方法和样本定义不清"],
+        "suggestions": ["重新检索文献并补充变量定义"],
+    }
+    selected = rework_agent_ids(validation, {"planner", "literature", "analyst", "writer"})
+    assert "literature" in selected
+    assert "analyst" in selected
+
+
 def test_rework_requires_score_improvement():
     assert rework_improved(72, 80) is True
     assert rework_improved(78, 78) is False
@@ -344,4 +421,6 @@ def test_delivery_metrics_are_deterministic():
     assert metrics["citation_coverage"] == {"cited": 1, "retrieved": 1, "percent": 100}
     assert metrics["constraint_compliance"]["total"] >= 5
     assert metrics["constraint_compliance"]["percent"] > 0
+
+
 

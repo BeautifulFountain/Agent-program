@@ -18,6 +18,13 @@ class LLMService:
             timeout=60,
             max_retries=1,
         )
+        vision_key = settings.vision_api_key or settings.llm_api_key
+        self.vision_client = None if self.mock or not settings.vision_model or not vision_key else AsyncOpenAI(
+            api_key=vision_key,
+            base_url=settings.vision_base_url or settings.llm_base_url,
+            timeout=90,
+            max_retries=1,
+        )
 
     async def complete(self, system: str, prompt: str, *, json_mode: bool = False) -> tuple[str, int]:
         if self.mock:
@@ -38,6 +45,28 @@ class LLMService:
         except Exception as exc:
             message = str(exc).replace(settings.llm_api_key, "***") if settings.llm_api_key else str(exc)
             raise RuntimeError(f"模型服务暂时不可用：{message[:240]}") from exc
+
+    async def complete_with_images(self, system: str, prompt: str, images: list[str]) -> tuple[str, int]:
+        if self.mock:
+            await asyncio.sleep(0.12)
+            return f"已收到{len(images)}张图片。当前为模拟模式，无法进行真实图像识别。", max(100, len(prompt) // 2)
+        if not settings.vision_model or self.vision_client is None:
+            raise RuntimeError("智能伙伴尚未配置视觉模型。请设置 VISION_MODEL，并按需配置 VISION_BASE_URL 与 VISION_API_KEY。")
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend({"type": "image_url", "image_url": {"url": image}} for image in images)
+        try:
+            response = await self.vision_client.chat.completions.create(
+                model=settings.vision_model,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
+                temperature=0.2,
+            )
+            answer = response.choices[0].message.content or ""
+            usage = response.usage.total_tokens if response.usage else 0
+            return answer, usage
+        except Exception as exc:
+            secret = settings.vision_api_key or settings.llm_api_key
+            message = str(exc).replace(secret, "***") if secret else str(exc)
+            raise RuntimeError(f"视觉模型暂时不可用：{message[:240]}") from exc
 
     def _mock_response(self, system: str, prompt: str, json_mode: bool) -> str:
         if json_mode or "评分" in system or "评审" in system:

@@ -32,6 +32,11 @@
   }
 }
 
+.badge-paused {
+  background: #fff3d8;
+  color: #946000;
+}
+
 .stat-card {
   min-height: 150px;
   display: flex;

@@ -42,7 +42,7 @@ export type NodeRun = {
   retry_count: number
   loop: number
   error: string | null
-  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number|string;result_count?:number;found?:number;duplicates?:number;providers?:string[];errors?:string[];results?:Array<KnowledgeSearchResult|{id:string;provider:string;title:string;url:string;doi?:string}>}>
+  tool_calls?: Array<{tool:string;query?:string;search_query?:string;expression?:string;result?:number|string;token_usage?:number;result_count?:number;found?:number;duplicates?:number;discarded_irrelevant?:number;providers?:string[];errors?:string[];results?:Array<KnowledgeSearchResult|{id:string;provider:string;title:string;url:string;doi?:string}>}>
 }
 
 export type KnowledgeDocument = {

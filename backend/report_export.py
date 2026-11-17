@@ -176,6 +176,16 @@ def build_report_docx(markdown: str, fallback_title: str) -> bytes:
             continue
         bullet = re.match(r"^[-*+]\s+(.+)$", stripped)
         numbered = re.match(r"^\d+[.)、]\s*(.+)$", stripped)
+        bracketed_reference = re.match(r"^\[(\d+)\]\s*(.+)$", stripped)
+        if bracketed_reference:
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = Cm(0.85)
+            paragraph.paragraph_format.first_line_indent = Cm(-0.85)
+            paragraph.paragraph_format.line_spacing = 1.5
+            paragraph.paragraph_format.space_after = Pt(0)
+            _add_inline(paragraph, f"[{bracketed_reference.group(1)}] {bracketed_reference.group(2)}", 12)
+            index += 1
+            continue
         if bullet or numbered:
             paragraph = document.add_paragraph(style="List Bullet" if bullet else "List Number")
             paragraph.paragraph_format.line_spacing = 1.5

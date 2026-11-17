@@ -72,6 +72,31 @@ def test_global_assistant_uses_platform_context(monkeypatch):
     assert response.data["mode"] == "mock"
 
 
+def test_global_assistant_routes_images_to_vision_model(monkeypatch):
+    from backend.main import llm
+
+    async def fake_complete_with_images(_system, _prompt, images):
+        assert len(images) == 1
+        assert images[0].startswith("data:image/png;base64,")
+        return "图片识别测试回复", 18
+
+    monkeypatch.setattr(llm, "complete_with_images", fake_complete_with_images)
+    payload = AssistantChatRequest(
+        message="这张图片是什么？",
+        page="/",
+        images=[{"name": "test.png", "data_url": "data:image/png;base64,aGVsbG8="}],
+    )
+    response = resolve(assistant_chat(payload))
+    assert response.data["reply"] == "图片识别测试回复"
+    assert response.data["mode"] == "vision"
+
+
+def test_global_assistant_rejects_too_many_images():
+    image = {"name": "test.png", "data_url": "data:image/png;base64,aGVsbG8="}
+    with pytest.raises(ValidationError):
+        AssistantChatRequest(message="分析图片", images=[image, image, image, image])
+
+
 def test_knowledge_api_round_trip(tmp_path, monkeypatch):
     from backend.main import agent_logic
 

@@ -140,12 +140,55 @@ def clean_report_output(value: str) -> str:
     value = re.sub(r"(?m)^\s*(?:特别说明|写作说明|生成说明|自检说明)[:：].*(?:\n|$)", "", value)
     value = re.sub(r"(?m)^\s*(?:[-*]\s*)?(?:本报告为|本文为)?(?:设计稿|未实施版本|无真实数据版本)[，,。；;：:].*(?:\n|$)", "", value)
     value = re.sub(r"(?:本报告|本文)(?:属于|仅为|是)(?:一份)?(?:设计稿|未实施版本)(?:，|,)?", "", value)
+    value = re.sub(
+        r"(?m)^\s*(?:后续版本|后续工作|下一版本|下一步)(?:将|会|需|需要).*(?:\n|$)", "", value,
+    )
+    value = re.sub(
+        r"(?m)^\s*(?:本报告|本文)(?:的)?(?:引用策略|检索策略|写作策略|修改策略)(?:遵循|依据|采用).*(?:\n|$)", "", value,
+    )
+    value = re.sub(r"(?m)^##\s*参考来源\s*$", "## 参考文献", value)
+    # A references section contains only formal entries. Execution notes belong to the audit UI, never the report.
+    reference_match = re.search(r"(?ms)^##\s*参考文献\s*$\n(?P<body>.*?)(?=^##\s|\Z)", value)
+    if reference_match:
+        body = reference_match.group("body")
+        entries = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            match = re.match(r"^(?:[-*]\s*)?(?:\[(\d+)\]|(\d+)[.、])\s*(.+)$", stripped)
+            if not match:
+                continue
+            content = match.group(3).strip()
+            if re.search(r"本报告|本文|检索|核验|摘要级|唯一.*来源|后续版本|证据等级|人工确认", content):
+                continue
+            entries.append(content)
+        if entries:
+            normalized = "\n".join(f"[{index}] {content}" for index, content in enumerate(entries, 1))
+            value = value[:reference_match.start()] + "## 参考文献\n\n" + normalized + "\n" + value[reference_match.end():]
+        else:
+            value = value[:reference_match.start()] + value[reference_match.end():]
     return re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
 def rework_improved(previous_score: int, candidate_score: int) -> bool:
     """Continue automatic rework only when the candidate improves the audited score."""
     return candidate_score > previous_score
+
+
+def rework_agent_ids(validation: dict, available: set[str]) -> list[str]:
+    """Route review findings back to the upstream owners that can actually repair them."""
+    feedback = "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])]).lower()
+    selected: list[str] = []
+    rules = (
+        ("planner", ("结构", "任务拆分", "依赖", "范围", "交付物", "完整性")),
+        ("literature", ("引用", "文献", "来源", "证据", "doi", "url", "可验证")),
+        ("analyst", ("数据", "变量", "样本", "统计", "指标", "方法", "公式", "可复现")),
+    )
+    for agent_id, terms in rules:
+        if agent_id in available and any(term in feedback for term in terms):
+            selected.append(agent_id)
+    return selected
 
 
 def select_best_result(run: dict) -> bool:
@@ -160,7 +203,16 @@ def select_best_result(run: dict) -> bool:
             validation = normalize_validation(_safe_json(review["output"]))
         except (RuntimeError, ValueError, TypeError, json.JSONDecodeError):
             continue
-        candidates.append((int(validation["score"]), int(review.get("loop", 0)), validation, review))
+        review_loop = int(review.get("loop", 0))
+        matching_writer = next((
+            item for item in reversed(run.get("node_runs", []))
+            if item.get("node_id") == "writer" and item.get("status") == "completed"
+            and int(item.get("loop", 0)) == review_loop and item.get("output")
+        ), None)
+        if not matching_writer:
+            continue
+        validation = enforce_deliverable_validation(run, validation, matching_writer["output"])
+        candidates.append((int(validation["score"]), review_loop, validation, review))
     if not candidates:
         return False
 
@@ -174,7 +226,7 @@ def select_best_result(run: dict) -> bool:
     if not writer_runs:
         return False
 
-    best_output = writer_runs[-1]["output"]
+    best_output = clean_report_output(writer_runs[-1]["output"])
     changed = any([
         run.get("score") != best_score,
         run.get("latest_score") != latest_score,
@@ -217,6 +269,8 @@ def evaluate_deliverable(run: dict) -> dict:
         "name": "未混入过程性说明",
         "passed": not bool(re.search(r"设计稿|未实施|无真实数据|写作说明|自检说明|Agent分工", output)),
     })
+    if citation_total >= 3:
+        checks.append({"name": "至少实际引用3条有效文献", "passed": len(cited) >= 3})
     task = run.get("task") or ""
     target = re.search(r"约\s*(\d{3,5})\s*字", task)
     if target:
@@ -240,10 +294,56 @@ def evaluate_deliverable(run: dict) -> dict:
     }
 
 
+def enforce_deliverable_validation(run: dict, validation: dict, output: str) -> dict:
+    """Apply deterministic delivery gates so fluent reviewer prose cannot approve a broken report."""
+    snapshot = {**run, "final_output": output}
+    metrics = evaluate_deliverable(snapshot)
+    result = deepcopy(validation)
+    result.setdefault("issues", [])
+    result.setdefault("suggestions", [])
+    result.setdefault("critical_flags", {})
+    citation = metrics["citation_coverage"]
+    checks = metrics["constraint_compliance"]["checks"]
+    process_clean = next((bool(item["passed"]) for item in checks if item["name"] == "未混入过程性说明"), True)
+    has_reference_section = bool(re.search(r"(?m)^##\s*(?:参考来源|参考文献)\s*$", output))
+    if citation["retrieved"] > 0 and citation["cited"] == 0:
+        result["critical_flags"]["unverifiable_core_citations"] = True
+        result["score"] = min(int(result.get("score", 0)), 69)
+        issue = "[阻断] 正文和参考文献未实际使用任何已检索证据。"
+        suggestion = "从上游有效证据中选择与核心论点直接对应的资料，在正文标注并在参考文献中列出准确标题与原始URL。"
+        if issue not in result["issues"]:
+            result["issues"].insert(0, issue)
+        if suggestion not in result["suggestions"]:
+            result["suggestions"].insert(0, suggestion)
+    elif citation["retrieved"] >= 3 and citation["cited"] < 3:
+        result["score"] = min(int(result.get("score", 0)), 79)
+        issue = f"[高] 已获得{citation['retrieved']}条有效证据，但报告仅实际引用{citation['cited']}条，未达到至少3条的交付目标。"
+        suggestion = "补充与核心论点直接对应的正文标注，并在参考文献中至少列出3条实际使用的有效来源。"
+        if issue not in result["issues"]:
+            result["issues"].insert(0, issue)
+        if suggestion not in result["suggestions"]:
+            result["suggestions"].insert(0, suggestion)
+    if not process_clean or re.search(r"后续版本|引用策略遵循人工确认|检索所得文献.*无实质对应", output):
+        result["critical_flags"]["missing_required_deliverable"] = True
+        result["score"] = min(int(result.get("score", 0)), 69)
+        issue = "[阻断] 报告正文混入执行说明、失败说明或未来修改计划，不是独立可读的研究成果。"
+        if issue not in result["issues"]:
+            result["issues"].insert(0, issue)
+    if citation["retrieved"] > 0 and not has_reference_section:
+        result["critical_flags"]["missing_required_deliverable"] = True
+        result["score"] = min(int(result.get("score", 0)), 69)
+        issue = "[阻断] 缺少正式参考文献章节。"
+        if issue not in result["issues"]:
+            result["issues"].append(issue)
+    result["deterministic_metrics"] = metrics
+    return result
+
+
 class RunManager:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task] = {}
         self.cancel_flags: set[str] = set()
+        self.pause_flags: set[str] = set()
 
     def create(self, task: str, workflow: dict, output_format: str = "markdown") -> dict:
         run_id = uuid4().hex[:12]
@@ -310,7 +410,9 @@ class RunManager:
                     await self.emit(run_id, "run.waiting_approval", {"node_id": approval_node["id"]})
                     return
 
-            validation = normalize_validation(_safe_json(completed["reviewer"]))
+            validation = enforce_deliverable_validation(
+                run, normalize_validation(_safe_json(completed["reviewer"])), completed.get("writer", ""),
+            )
             run["validation"] = validation
             run["score"] = int(validation.get("score", 0))
             while run["score"] < workflow["quality_threshold"] and run["loop_count"] < workflow["max_loop_count"]:
@@ -323,6 +425,10 @@ class RunManager:
                     "不得扩展无关主题、增加重复免责声明或把核验过程写入报告正文。\n"
                     + "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])])
                 )
+                for node_id in rework_agent_ids(validation, set(nodes)):
+                    completed[node_id] = await self._execute_node(
+                        run, nodes[node_id], completed, feedback=feedback, rework=True,
+                    )
                 previous_draft = completed.get("writer", "")
                 completed["writer"] = await self._execute_node(
                     run, nodes["writer"], completed, feedback=feedback, rework=True,
@@ -331,7 +437,9 @@ class RunManager:
                 if "fact-checker" in nodes:
                     completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
                 completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
-                validation = normalize_validation(_safe_json(completed["reviewer"]))
+                validation = enforce_deliverable_validation(
+                    run, normalize_validation(_safe_json(completed["reviewer"])), completed.get("writer", ""),
+                )
                 run["validation"] = validation
                 run["score"] = int(validation.get("score", 0))
                 self.save(run)
@@ -351,10 +459,20 @@ class RunManager:
             self.save(run)
             await self.emit(run_id, "run.completed", {"status": run["status"], "score": run["score"]})
         except asyncio.CancelledError:
-            run["status"] = "cancelled"
-            run["finished_at"] = utc_now()
-            self.save(run)
-            await self.emit(run_id, "run.cancelled", {"status": "cancelled"})
+            if run_id in self.pause_flags:
+                for item in run.get("node_runs", []):
+                    if item.get("status") in {"running", "reworking"}:
+                        item["status"] = "paused"
+                        item["finished_at"] = utc_now()
+                run["status"] = "paused"
+                run["finished_at"] = None
+                self.save(run)
+                await self.emit(run_id, "run.paused", {"status": "paused"})
+            else:
+                run["status"] = "cancelled"
+                run["finished_at"] = utc_now()
+                self.save(run)
+                await self.emit(run_id, "run.cancelled", {"status": "cancelled"})
         except Exception as exc:
             run["status"] = "failed"
             run["error"] = str(exc)[:500]
@@ -389,6 +507,7 @@ class RunManager:
         if run.get("human_feedback") and node["id"] != "requirements":
             prompt += f"\n人工确认意见：{run['human_feedback']}\n后续工作必须遵循该意见。"
         prompt, tool_calls = await agent_logic.prepare_async(node["agent_id"], run["task"], prompt)
+        run["token_usage"] += sum(int(call.get("token_usage") or 0) for call in tool_calls)
         node_run["input"] = prompt
         node_run["tool_calls"] = tool_calls
         run["node_runs"].append(node_run)
@@ -435,6 +554,33 @@ class RunManager:
             task.cancel()
             return True
         return False
+
+    def pause(self, run_id: str) -> dict:
+        run = db.get("runs", run_id)
+        if not run:
+            raise ValueError("任务不存在")
+        if run.get("status") not in {"queued", "running", "reworking"}:
+            raise ValueError("只有执行中的任务可以暂停")
+        self.pause_flags.add(run_id)
+        run["status"] = "paused"
+        self.save(run)
+        task = self.tasks.get(run_id)
+        if task and not task.done():
+            task.cancel()
+        return run
+
+    def resume(self, run_id: str) -> dict:
+        run = db.get("runs", run_id)
+        if not run:
+            raise ValueError("任务不存在")
+        if run.get("status") != "paused":
+            raise ValueError("只有已暂停任务可以继续执行")
+        self.pause_flags.discard(run_id)
+        self.cancel_flags.discard(run_id)
+        run["status"] = "queued"
+        self.save(run)
+        self.tasks[run_id] = asyncio.create_task(self.execute(run_id, resume=True))
+        return run
 
     def approve(self, run_id: str, feedback: str) -> dict:
         run = db.get("runs", run_id)
@@ -492,7 +638,9 @@ class RunManager:
             if "fact-checker" in nodes:
                 completed["fact-checker"] = await self._execute_node(run, nodes["fact-checker"], completed, feedback=feedback, rework=True)
             completed["reviewer"] = await self._execute_node(run, nodes["reviewer"], completed, feedback=feedback, rework=True)
-            run["validation"] = normalize_validation(_safe_json(completed["reviewer"]))
+            run["validation"] = enforce_deliverable_validation(
+                run, normalize_validation(_safe_json(completed["reviewer"])), completed.get("writer", ""),
+            )
             run["score"] = run["validation"]["score"]
             run["final_output"] = completed["writer"]
             run["latest_score"] = run["score"]

@@ -60,22 +60,107 @@ class ExternalKnowledgeService:
     def __init__(self, knowledge: LocalKnowledgeTool) -> None:
         self.knowledge = knowledge
 
-    async def search_and_ingest(self, query: str) -> dict[str, Any]:
+    @staticmethod
+    def default_searches(task: str) -> list[dict[str, Any]]:
+        """Deterministic fallback used only when dynamic search planning fails."""
+        query = ExternalKnowledgeService.focus_query(task)
+        return [{"query": query, "must_include_groups": []}]
+
+    @staticmethod
+    def normalize_searches(value: Any, task: str) -> list[dict[str, Any]]:
+        searches = value.get("searches", []) if isinstance(value, dict) else []
+        normalized = []
+        for item in searches[:3]:
+            if not isinstance(item, dict):
+                continue
+            query = _clean(str(item.get("query") or ""))[:300]
+            groups = []
+            for group in item.get("must_include_groups", [])[:4]:
+                if isinstance(group, list):
+                    terms = [_clean(str(term)).lower()[:80] for term in group[:8] if _clean(str(term))]
+                    if terms:
+                        groups.append(terms)
+            if len(query) >= 5:
+                normalized.append({"query": query, "must_include_groups": groups})
+        return normalized or ExternalKnowledgeService.default_searches(task)
+
+    @staticmethod
+    def relevant_to_search(title: str, summary: str, search: dict[str, Any]) -> bool:
+        text = f"{title} {summary}".lower()
+        if title.strip().lower().startswith("review for "):
+            return False
+        groups = search.get("must_include_groups") or []
+        return all(any(term.lower() in text for term in group) for group in groups)
+
+    @staticmethod
+    def focus_query(task: str) -> str:
+        """Translate verbose Chinese task instructions into a scholarly search intent."""
+        lowered = task.lower()
+        if ("大语言模型" in task or "llm" in lowered) and any(term in task for term in ("文献", "综述", "研究空白", "主题归纳")):
+            return "large language models systematic literature review evidence synthesis literature search citation verification"
+        if "计算机视觉" in task:
+            return "computer vision systematic review survey"
+        if "生成式人工智能" in task:
+            return "generative artificial intelligence systematic review"
+        return re.sub(r"\s+", " ", task.strip())[:500]
+
+    @classmethod
+    def focus_queries(cls, task: str) -> list[str]:
+        primary = cls.focus_query(task)
+        if ("大语言模型" in task or "llm" in task.lower()) and any(term in task for term in ("文献", "综述", "研究空白", "主题归纳")):
+            return [
+                primary,
+                "systematic literature review methodology PRISMA evidence synthesis literature screening citation",
+            ]
+        return [primary]
+
+    @staticmethod
+    def relevant_to_task(task: str, title: str, summary: str = "") -> bool:
+        """Reject superficially matched records before they enter the durable library."""
+        text = f"{title} {summary}".lower()
+        if title.strip().lower().startswith("review for "):
+            return False
+        lowered = task.lower()
+        if ("大语言模型" in task or "llm" in lowered) and any(term in task for term in ("文献", "综述", "研究空白", "主题归纳")):
+            ai_terms = ("large language model", "llm", "generative ai", "artificial intelligence")
+            review_terms = (
+                "literature review", "systematic review", "scoping review", "evidence synthesis",
+                "literature search", "citation", "bibliometric", "research synthesis", "review automation",
+            )
+            classic_terms = ("prisma", "cochrane", "systematic review methodology", "evidence synthesis", "literature screening")
+            return (
+                any(term in text for term in ai_terms) and any(term in text for term in review_terms)
+            ) or any(term in text for term in classic_terms)
+        return True
+
+    async def search_and_ingest(self, query: str, searches: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if not settings.external_search_enabled:
             return {"query": query, "enabled": False, "providers": [], "imported": [], "duplicates": 0, "errors": []}
+        search_specs = self.normalize_searches({"searches": searches or []}, query) if searches else self.default_searches(query)
         async with httpx.AsyncClient(timeout=18, follow_redirects=True, headers={"User-Agent": "AgentFlow/0.1 (research knowledge integration)"}) as client:
-            calls = [self._openalex(client, query), self._crossref(client, query), self._arxiv(client, query)]
-            if settings.brave_search_api_key:
-                calls.append(self._brave(client, query))
+            calls = []
+            labels: list[tuple[str, dict[str, Any]]] = []
+            for search in search_specs:
+                focused_query = search["query"]
+                calls.extend([self._openalex(client, focused_query), self._crossref(client, focused_query), self._arxiv(client, focused_query)])
+                labels.extend([("OpenAlex", search), ("Crossref", search), ("arXiv", search)])
+                if settings.brave_search_api_key:
+                    calls.append(self._brave(client, focused_query))
+                    labels.append(("Brave Search", search))
             results = await asyncio.gather(*calls, return_exceptions=True)
         records: list[ExternalRecord] = []
         errors: list[str] = []
         providers = ["OpenAlex", "Crossref", "arXiv"] + (["Brave Search"] if settings.brave_search_api_key else [])
-        for provider, result in zip(providers, results):
+        discarded_irrelevant = 0
+        for (provider, search), result in zip(labels, results):
             if isinstance(result, Exception):
                 errors.append(f"{provider}: {_clean(str(result))[:160]}")
             else:
-                records.extend(result)
+                for record in result:
+                    if self.relevant_to_search(record.title, record.summary, search):
+                        records.append(record)
+                    else:
+                        discarded_irrelevant += 1
         imported: list[dict] = []
         duplicates = 0
         seen: set[str] = set()
@@ -93,7 +178,12 @@ class ExternalKnowledgeService:
                 imported.append({"id": document["id"], "provider": record.provider, "title": record.title, "url": record.url, "doi": record.doi})
             else:
                 duplicates += 1
-        return {"query": query, "enabled": True, "providers": providers, "found": len(records), "imported": imported, "duplicates": duplicates, "errors": errors}
+        return {
+            "query": query, "search_query": " | ".join(item["query"] for item in search_specs),
+            "searches": search_specs, "enabled": True, "providers": providers,
+            "found": len(records), "discarded_irrelevant": discarded_irrelevant,
+            "imported": imported, "duplicates": duplicates, "errors": errors,
+        }
 
     async def _openalex(self, client: httpx.AsyncClient, query: str) -> list[ExternalRecord]:
         params: dict[str, str | int] = {"search": query, "per_page": settings.external_search_limit}

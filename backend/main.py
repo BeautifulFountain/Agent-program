@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
+import re
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -13,7 +16,7 @@ from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from backend.config import settings
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.database import db
-from backend.engine import evaluate_deliverable, run_manager, select_best_result
+from backend.engine import clean_report_output, evaluate_deliverable, run_manager, select_best_result
 from backend.llm import llm
 from backend.routing import recommend_agents
 from backend.report_export import build_report_docx
@@ -254,6 +257,10 @@ async def get_run(run_id: str) -> ApiResponse:
     if run.get("status") in {"completed", "needs_review"} and select_best_result(run):
         db.upsert("runs", run_id, run)
     if run.get("final_output"):
+        cleaned_output = clean_report_output(run["final_output"])
+        if cleaned_output != run["final_output"]:
+            run["final_output"] = cleaned_output
+            db.upsert("runs", run_id, run)
         metrics = evaluate_deliverable(run)
         if run.get("delivery_metrics") != metrics:
             run["delivery_metrics"] = metrics
@@ -284,7 +291,7 @@ async def download_report_docx(run_id: str) -> Response:
         raise HTTPException(404, "任务不存在")
     if not run.get("final_output"):
         raise HTTPException(409, "任务尚未生成最终报告")
-    content = build_report_docx(run["final_output"], run.get("task") or "研究报告")
+    content = build_report_docx(clean_report_output(run["final_output"]), run.get("task") or "研究报告")
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -297,6 +304,31 @@ async def cancel_run(run_id: str) -> ApiResponse:
     if not db.get("runs", run_id):
         raise HTTPException(404, "任务不存在")
     return ok({"cancelled": run_manager.cancel(run_id)}, "取消请求已提交")
+
+
+@app.post("/api/runs/{run_id}/pause", response_model=ApiResponse)
+async def pause_run(run_id: str) -> ApiResponse:
+    try:
+        run = run_manager.pause(run_id)
+        task = run_manager.tasks.get(run_id)
+        if task and not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        run = db.get("runs", run_id) or run
+    except ValueError as exc:
+        raise HTTPException(409 if db.get("runs", run_id) else 404, str(exc)) from exc
+    return ok(run, "任务暂停请求已提交")
+
+
+@app.post("/api/runs/{run_id}/resume", response_model=ApiResponse)
+async def resume_run(run_id: str) -> ApiResponse:
+    try:
+        run = run_manager.resume(run_id)
+    except ValueError as exc:
+        raise HTTPException(409 if db.get("runs", run_id) else 404, str(exc)) from exc
+    return ok(run, "任务已从暂停节点继续执行")
 
 
 @app.post("/api/runs/{run_id}/approve", response_model=ApiResponse)
@@ -328,7 +360,7 @@ async def stream_events(run_id: str, request: Request):
                 last_id = event["event_id"]
                 yield f"id: {last_id}\nevent: {event['type']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             run = db.get("runs", run_id)
-            if run and run["status"] in {"completed", "failed", "cancelled", "needs_review", "waiting_final_acceptance"} and not events:
+            if run and run["status"] in {"completed", "failed", "cancelled", "paused", "needs_review", "waiting_final_acceptance"} and not events:
                 break
             yield ": heartbeat\n\n"
             await asyncio.sleep(0.5)
@@ -359,6 +391,26 @@ async def assistant_chat(payload: AssistantChatRequest) -> ApiResponse:
         "你能解释全局状态、指导用户操作、帮助拆解科研任务，但不能声称已执行未发生的操作，不能泄露密钥，"
         "也不能绕过用户确认直接删除任务或启动高成本流程。"
     )
-    reply, tokens = await llm.complete(system, prompt)
-    return ok({"reply": reply, "tokens": tokens, "mode": "mock" if llm.mock else "deepseek"})
+    image_urls: list[str] = []
+    for image in payload.images:
+        match = re.fullmatch(r"data:(image/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)", image.data_url)
+        if not match:
+            raise HTTPException(422, f"图片“{image.name}”格式不受支持，请使用 PNG、JPG、WEBP 或 GIF")
+        try:
+            binary = base64.b64decode(match.group(2), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(422, f"图片“{image.name}”数据无效") from exc
+        if len(binary) > 5 * 1024 * 1024:
+            raise HTTPException(422, f"图片“{image.name}”超过 5MB")
+        image_urls.append(image.data_url)
+    try:
+        if image_urls:
+            reply, tokens = await llm.complete_with_images(system, prompt, image_urls)
+            mode = "vision"
+        else:
+            reply, tokens = await llm.complete(system, prompt)
+            mode = "mock" if llm.mock else "deepseek"
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return ok({"reply": reply, "tokens": tokens, "mode": mode})
 
