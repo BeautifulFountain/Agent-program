@@ -8,6 +8,10 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      LLM_MOCK: "true"
+      EXTERNAL_SEARCH_ENABLED: "false"
+      DATABASE_PATH: test_agentflow.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
