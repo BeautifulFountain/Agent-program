@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 from backend.tools import CalculatorTool, LocalKnowledgeTool
+from backend.external_knowledge import ExternalKnowledgeService
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,10 @@ PROTOCOLS: dict[str, AgentProtocol] = {
         ("变量定义一致", "统计方法与数据类型匹配", "不得把示例数值写成真实结果"),
     ),
     "writer": AgentProtocol(
-        "整合全部有效中间成果形成结构完整的研究报告。",
+        "面向科研人员和管理者，整合有效证据形成可独立阅读、论证完整的专业研究报告。",
         "只使用前序成果、人工确认意见和已标注证据。",
-        "以Markdown输出：摘要、背景、方法、发现、讨论、风险局限、建议、参考来源。",
-        ("不得遗漏人工约束", "不得把待核验内容写成确定事实", "章节结论需可追溯"),
+        "以Markdown输出正式研究报告：准确具体的一级标题、摘要、关键词、研究背景、研究方法、核心分析、讨论、结论与建议、参考来源。摘要必须直接概括研究目的、方法、主要认识和结论；正文以连贯论述为主。只输出报告正文，不得输出写作说明、执行过程、自检记录、Agent分工或评审过程。",
+        ("不得遗漏人工约束", "不得把待核验内容写成确定事实", "章节结论需可追溯", "标题摘要结论可直接用于正式交付"),
     ),
     "fact-checker": AgentProtocol(
         "逐项核验报告的事实、逻辑、来源和约束一致性。",
@@ -55,8 +56,23 @@ PROTOCOLS: dict[str, AgentProtocol] = {
     "reviewer": AgentProtocol(
         "依据统一量表对完整成果做独立质量评审。",
         "读取报告、核验结果、需求与人工确认意见。",
-        "仅输出JSON：score、dimensions、issues、suggestions。dimensions至少含完整性、逻辑性、可验证性、约束符合度；issues和suggestions分别最多6项，只保留影响验收的关键问题。",
-        ("总分0到100", "问题必须具体可定位", "建议必须能驱动下一轮返工", "不得用大量低风险项淹没关键缺陷"),
+        (
+            "仅输出JSON：score、dimensions、critical_flags、issues、suggestions。"
+            "dimensions必须使用以下五个精确名称并分别给出0到100分：完整性（权重20%）、逻辑性（20%）、"
+            "可验证性（25%）、约束符合度（20%）、表达质量与可交付性（15%）。score必须先按加权公式计算："
+            "完整性×0.20+逻辑性×0.20+可验证性×0.25+约束符合度×0.20+表达质量与可交付性×0.15，并四舍五入为整数。"
+            "评分锚点：90至100可直接交付；80至89达到标准但有少量改进空间；70至79需要返工；"
+            "60至69存在重大缺陷；0至59不具备交付条件。critical_flags必须包含四个布尔字段："
+            "fabricated_data、unverifiable_core_citations、missing_required_deliverable、violated_explicit_constraints。"
+            "若fabricated_data为true，总分最高59；若unverifiable_core_citations或missing_required_deliverable为true，总分最高69；"
+            "若violated_explicit_constraints为true，总分最高79。issues和suggestions分别最多6项，只保留影响验收的关键问题。"
+            "返工稿必须沿用与上一轮完全相同的量表和严格度；已修复的问题应得到正向反映，不得为了制造反馈而新增低价值扣分项。"
+        ),
+        (
+            "五个维度必须齐全且使用精确名称", "总分必须符合固定权重与严重问题封顶规则",
+            "问题必须具体可定位", "建议必须能驱动下一轮返工", "不得用大量低风险项淹没关键缺陷",
+            "只有出现新的实质性错误时分数才可下降并须说明原因",
+        ),
     ),
 }
 
@@ -65,6 +81,30 @@ class AgentLogic:
     def __init__(self) -> None:
         self.knowledge = LocalKnowledgeTool()
         self.calculator = CalculatorTool()
+        self.external = ExternalKnowledgeService(self.knowledge)
+
+    async def prepare_async(self, agent_id: str, task: str, base_prompt: str) -> tuple[str, list[dict]]:
+        """Enrich the literature node with durable external evidence before local retrieval."""
+        external_call = None
+        if agent_id == "literature":
+            external_call = await self.external.search_and_ingest(task)
+        prompt, tool_calls = self.prepare(agent_id, task, base_prompt)
+        if external_call is not None:
+            tool_calls.insert(0, {
+                "tool": "external_knowledge_search", "query": task,
+                "providers": external_call.get("providers", []), "found": external_call.get("found", 0),
+                "result_count": len(external_call.get("imported", [])), "results": external_call.get("imported", []),
+                "duplicates": external_call.get("duplicates", 0), "errors": external_call.get("errors", []),
+            })
+            summary = (
+                f"\n\n[外部检索入库审计]\n已检索：{', '.join(external_call.get('providers', [])) or '未启用'}；"
+                f"发现{external_call.get('found', 0)}条，新增入库{len(external_call.get('imported', []))}条，"
+                f"去重{external_call.get('duplicates', 0)}条。"
+            )
+            if external_call.get("errors"):
+                summary += "部分服务不可用：" + "；".join(external_call["errors"])
+            prompt += summary
+        return prompt, tool_calls
 
     def prepare(self, agent_id: str, task: str, base_prompt: str) -> tuple[str, list[dict]]:
         protocol = PROTOCOLS.get(agent_id)
@@ -108,14 +148,20 @@ class AgentLogic:
         )
         if agent_id == "writer":
             prompt += (
-                "\n报告中的术语必须统一；每项核心结论需与人工确认范围对应。"
+                "\n报告必须像可直接交付的科研报告，而不是任务清单、核验记录或风险提示汇编。"
+                "以自然段展开证据、分析和论证，避免连续堆砌短句、项目符号和同义提醒；建议应建立在前文分析上。"
+                "标题、摘要、关键词和结论中禁止出现‘设计稿’‘未实施’‘无真实数据’‘待确认’‘内部版’等过程标签。"
+                "若任务仅要求研究方案，应在研究方法或局限章节用一句专业表述说明实证数据采集不在本研究范围内，全文只说明一次。"
+                "不得反复解释缺少数据、资料局限或合规免责声明，不得让这些内容挤占核心分析篇幅。"
+                "报告中的术语必须统一；每项核心结论需与人工确认范围对应。"
                 "对无直接来源支撑的一般性判断使用审慎限定，不得把建议、假设或示例写成已验证事实。"
                 "返工时逐条落实评审意见，同时删除造成同类问题的旧表述。"
             )
             if "上一版完整报告" in base_prompt:
                 prompt += (
                     "\n本次为受约束修订：优先处理高风险和中风险意见；通过替换、删除或压缩原文完成修订，"
-                    "不得用不断追加段落的方式修补。修订后的篇幅仍必须满足原始任务字数范围。"
+                    "不得用不断追加段落的方式修补，不得增加‘修改说明’或逐条回应评审意见。"
+                    "修订后的篇幅仍必须满足原始任务字数范围，并保持摘要、正文和结论相互一致。"
                 )
         elif agent_id == "literature":
             prompt += (

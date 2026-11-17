@@ -26,6 +26,12 @@
   .page-header { min-height: 86px; margin-bottom: 26px; align-items: center; }
 }
 
+@media (min-width: 1081px) {
+  .stats-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
 .stat-card {
   min-height: 150px;
   display: flex;
@@ -70,4 +76,10 @@
 @media (max-width: 760px) {
   .topbar .context em { display: none; }
   .stat-card { min-height: 128px; }
+}
+
+@media (min-width: 1081px) {
+  .run-metrics {
+    grid-template-columns: 1.35fr repeat(5, minmax(0, 1fr));
+  }
 }

@@ -42,7 +42,7 @@ export type NodeRun = {
   retry_count: number
   loop: number
   error: string | null
-  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number|string;result_count?:number;results?:KnowledgeSearchResult[]}>
+  tool_calls?: Array<{tool:string;query?:string;expression?:string;result?:number|string;result_count?:number;found?:number;duplicates?:number;providers?:string[];errors?:string[];results?:Array<KnowledgeSearchResult|{id:string;provider:string;title:string;url:string;doi?:string}>}>
 }
 
 export type KnowledgeDocument = {
@@ -54,6 +54,7 @@ export type KnowledgeDocument = {
 export type KnowledgeSearchResult = {
   source: string; title: string; organization: string; published_at: string
   url: string; chunk: string; score: string; snippet: string
+  coverage?: string; match_terms?: string[]
 }
 
 export type DispatchRecommendation = {
@@ -81,6 +82,10 @@ export type TaskRun = {
   finished_at: string | null
   node_runs: NodeRun[]
   final_output: string | null
+  delivery_metrics?: {
+    citation_coverage: { cited:number; retrieved:number; percent:number }
+    constraint_compliance: { satisfied:number; total:number; percent:number; checks:Array<{name:string;passed:boolean}> }
+  }
   validation: {
     score: number
     issues?: Array<string | { id?: string; severity?: string; description?: string; suggestion?: string }>

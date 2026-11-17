@@ -1,0 +1,23 @@
+---
+title: Greedy function approximation: A gradient boosting machine.
+organization: The Annals of Statistics
+published_at: 2001-10-01
+url: https://doi.org/10.1214/aos/1013203451
+---
+
+# Greedy function approximation: A gradient boosting machine.
+
+- 外部数据源：OpenAlex
+- 作者：Jerome H. Friedman
+- 发布日期：2001-10-01
+- DOI：10.1214/aos/1013203451
+- 被引次数：32984
+- 原始链接：https://doi.org/10.1214/aos/1013203451
+
+## 摘要或检索片段
+
+Function estimation/approximation is viewed from the perspective of numerical optimization in function space, rather than parameter space. A connection is made between stagewise additive expansions and steepest-descent minimization. A general gradient descent “boosting” paradigm is developed for additive expansions based on any fitting criterion.Specific algorithms are presented for least-squares, least absolute deviation, and Huber-M loss functions for regression, and multiclass logistic likelihood for classification. Special enhancements are derived for the particular case where the individual additive components are regression trees, and tools for interpreting such “TreeBoost” models are presented. Gradient boosting of regression trees produces competitive, highly robust, interpretable procedures for both regression and classification, especially appropriate for mining less than clean data. Connections between this approach and the boosting methods of Freund and Shapire and Friedman, Hastie and Tibshirani are discussed.
+
+## 主题分类
+
+数据挖掘

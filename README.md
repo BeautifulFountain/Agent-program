@@ -14,7 +14,8 @@ AgentFlow 是一个面向复杂科研任务的多智能体编排、调度、执�
 - SSE 运行事件接口以及前端实时轮询展示
 - DeepSeek OpenAI 兼容接口与无密钥 Mock 演示模式
 - 中文分词与分段召回的本地知识库，返回标题、机构、日期、原始链接和证据片段
-- 知识库管理页面支持 Markdown/TXT 上传、预览、删除和独立检索测试，内置 16 份治理与研究方法资料
+- 文献 Agent 可自动检索 OpenAlex、Crossref、arXiv，并把去重后的可追溯结果写入本地知识库；配置 Brave Search Key 后可补充网页资料
+- 知识库管理页面支持 Markdown/TXT 批量上传、预览、单条/批量删除和独立检索质量测试
 - 动态 Agent 推荐根据任务特征选择协作角色，并同步生成运行流程快照
 - 事实核验 Agent 使用原始任务独立复检知识库证据，核验与评审反馈均限制为最多 6 项
 - React Flow 工作流图、控制台、Agent管理、任务发起和运行详情页
@@ -53,6 +54,18 @@ LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 LLM_MOCK=false
 ```
+
+外部知识检索默认开启。OpenAlex、Crossref 和 arXiv 可直接进行基础查询；建议按需补充以下配置：
+
+```ini
+EXTERNAL_SEARCH_ENABLED=true
+OPENALEX_API_KEY=可选_OpenAlex密钥
+CROSSREF_MAILTO=可选_联系邮箱
+BRAVE_SEARCH_API_KEY=可选_Brave网页搜索密钥
+EXTERNAL_SEARCH_LIMIT=4
+```
+
+文献 Agent 执行时会并行检索外部服务，按 DOI 或 URL 去重后写入 `knowledge/external/`，再通过本地检索向模型提供证据。外部服务失败不会中断任务，错误会保留在工具调用审计中。
 
 密钥不得提交到代码仓库。启动后端：
 
@@ -153,6 +166,6 @@ python -m scripts.real_benchmark_suite integrity
 ## 当前边界
 
 - 工作流画布当前用于可视化，编辑保存接口已具备，拖拽持久化将在下一迭代接入。
-- 本地知识库支持 Markdown/TXT 中文分词、分段评分和来源元数据；当前未引入大型向量数据库，适合比赛原型和小型资料集。
+- 本地知识库支持 Markdown/TXT 中文分词、相关性门槛、分段评分和来源元数据；当前未引入大型向量数据库，适合比赛原型和中小型资料集。
 - 单机 SQLite 适合比赛原型；生产集群需迁移到 PostgreSQL 和任务队列。
 

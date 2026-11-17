@@ -8,14 +8,15 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 from backend.config import settings
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.database import db
-from backend.engine import run_manager, select_best_result
+from backend.engine import evaluate_deliverable, run_manager, select_best_result
 from backend.llm import llm
 from backend.routing import recommend_agents
+from backend.report_export import build_report_docx
 from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, DispatchRecommendationRequest, FinalReworkRequest, KnowledgeDocumentCreate, KnowledgeSearchRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
 
@@ -67,7 +68,14 @@ async def root() -> RedirectResponse:
 
 @app.get("/api/health", response_model=ApiResponse)
 async def health() -> ApiResponse:
-    return ok({"status": "healthy", "environment": settings.app_env, "llm_mode": "mock" if llm.mock else "deepseek"})
+    return ok({
+        "status": "healthy", "environment": settings.app_env, "llm_mode": "mock" if llm.mock else "deepseek",
+        "external_search": {
+            "enabled": settings.external_search_enabled,
+            "providers": ["OpenAlex", "Crossref", "arXiv"] + (["Brave Search"] if settings.brave_search_api_key else []),
+            "web_search_configured": bool(settings.brave_search_api_key),
+        },
+    })
 
 
 @app.get("/api/agents", response_model=ApiResponse)
@@ -245,6 +253,11 @@ async def get_run(run_id: str) -> ApiResponse:
         db.upsert("runs", run_id, run)
     if run.get("status") in {"completed", "needs_review"} and select_best_result(run):
         db.upsert("runs", run_id, run)
+    if run.get("final_output"):
+        metrics = evaluate_deliverable(run)
+        if run.get("delivery_metrics") != metrics:
+            run["delivery_metrics"] = metrics
+            db.upsert("runs", run_id, run)
     if run.get("status") in {"needs_review", "waiting_final_acceptance"}:
         run["status"] = "completed"
         db.upsert("runs", run_id, run)
@@ -262,6 +275,21 @@ async def delete_run(run_id: str) -> ApiResponse:
     if not db.delete_run(run_id):
         raise HTTPException(404, "任务不存在")
     return ok({"id": run_id}, "任务及其事件记录已删除")
+
+
+@app.get("/api/runs/{run_id}/report.docx")
+async def download_report_docx(run_id: str) -> Response:
+    run = db.get("runs", run_id)
+    if not run:
+        raise HTTPException(404, "任务不存在")
+    if not run.get("final_output"):
+        raise HTTPException(409, "任务尚未生成最终报告")
+    content = build_report_docx(run["final_output"], run.get("task") or "研究报告")
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="AgentFlow-{run_id}.docx"'},
+    )
 
 
 @app.post("/api/runs/{run_id}/cancel", response_model=ApiResponse)

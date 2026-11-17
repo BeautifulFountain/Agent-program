@@ -1,0 +1,55 @@
+{
+  "run_id": "1d7040bece80",
+  "status": "completed",
+  "score": 86,
+  "selected_loop": 2,
+  "loop_count": 2,
+  "token_usage": 59120,
+  "delivery_metrics": {
+    "citation_coverage": {
+      "cited": 2,
+      "retrieved": 3,
+      "percent": 67
+    },
+    "constraint_compliance": {
+      "satisfied": 7,
+      "total": 8,
+      "percent": 88,
+      "checks": [
+        {
+          "name": "已生成正式成果",
+          "passed": true
+        },
+        {
+          "name": "包含报告标题与正文结构",
+          "passed": true
+        },
+        {
+          "name": "未混入过程性说明",
+          "passed": true
+        },
+        {
+          "name": "篇幅约1500字",
+          "passed": false
+        },
+        {
+          "name": "覆盖明确要求：数据安全",
+          "passed": true
+        },
+        {
+          "name": "覆盖明确要求：个人信息保护",
+          "passed": true
+        },
+        {
+          "name": "覆盖明确要求：学术诚信",
+          "passed": true
+        },
+        {
+          "name": "覆盖明确要求：风险",
+          "passed": true
+        }
+      ]
+    }
+  },
+  "error": null
+}

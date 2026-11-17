@@ -26,6 +26,10 @@ from backend.seed import seed_defaults
 
 
 SCENARIOS = {
+    "governance": {
+        "task": "撰写一份约1000字的研究简报，分析生成式人工智能在高校科研管理中的三个主要应用价值、三个主要风险及对应治理建议；仅使用可核验的一般性事实，不虚构调查数据。",
+        "confirmation": "研究对象限定为高校科研管理部门；重点分析效率、质量、合规与数据安全；引用可核验来源；输出约1000字Markdown研究简报；不得虚构统计数据。",
+    },
     "analysis": {
         "task": "为某高校研究生生成式人工智能工具使用调查设计一份约1000字、可复现的数据分析方案，包括变量定义、数据清洗、描述统计、组间比较、稳健性检查和结果呈现；不得虚构数据或分析结果。",
         "confirmation": "研究对象为某高校在读研究生；只设计分析方案，不生成调查结果；区分使用率、使用频率、使用场景和付费情况；输出Markdown；明确统计方法的适用条件与局限。",
@@ -112,6 +116,7 @@ async def run_multi(task: str, confirmation: str) -> dict:
         "run_id": result["id"],
         "status": result.get("status"),
         "error": result.get("error"),
+        "delivery_metrics": result.get("delivery_metrics"),
     }
 
 

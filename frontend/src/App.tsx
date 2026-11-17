@@ -29,12 +29,11 @@ export default function App() {
           <item.icon size={18}/><span>{item.label}</span>
         </NavLink>)}
       </nav>
-      <div className="sidebar-status"><span className="status-dot"/><div><strong>调度服务在线</strong><span>DeepSeek 兼容模式</span></div></div>
     </aside>
     <main>
       <header className="topbar">
         <button className="menu-button icon-button" aria-label="打开导航" onClick={() => setOpen(true)}><Menu size={21}/></button>
-        <div className="context"><FlaskConical size={16}/><span><strong>AgentFlow</strong><em>多智能体编排平台</em></span></div>
+        <div className="context"><FlaskConical size={16}/><strong>AgentFlow 科研多智能体协作平台</strong></div>
         <div className="system-chip"><Activity size={15}/><span>系统正常</span></div>
       </header>
       <div className="content">

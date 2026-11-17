@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 from pydantic import ValidationError
 
@@ -17,6 +15,19 @@ from backend.main import (
     search_knowledge,
     startup,
 )
+
+
+def resolve(coroutine):
+    """Resolve endpoint coroutines that do not require an active I/O loop.
+
+    The managed Windows test environment blocks asyncio's internal socketpair,
+    so API unit tests deliberately use deterministic, no-I/O collaborators.
+    """
+    try:
+        coroutine.send(None)
+    except StopIteration as completed:
+        return completed.value
+    raise AssertionError("测试协程执行了未隔离的异步 I/O")
 from backend.schemas import (
     AgentCreate,
     AssistantChatRequest,
@@ -28,9 +39,9 @@ from backend.schemas import (
 
 def test_health_and_seed_data():
     startup()
-    health_response = asyncio.run(health())
+    health_response = resolve(health())
     assert health_response.data["status"] == "healthy"
-    agents_response = asyncio.run(list_agents())
+    agents_response = resolve(list_agents())
     assert len(agents_response.data) >= 5
 
 
@@ -40,16 +51,23 @@ def test_create_agent_validation():
 
 
 def test_root_redirects_to_frontend():
-    response = asyncio.run(root())
+    response = resolve(root())
     assert response.status_code == 307
     assert response.headers["location"] == "http://127.0.0.1:5173"
 
 
-def test_global_assistant_uses_platform_context():
+def test_global_assistant_uses_platform_context(monkeypatch):
+    from backend.main import llm
+
+    async def fake_complete(*_args, **_kwargs):
+        return "平台助手测试回复", 12
+
+    monkeypatch.setattr(llm, "complete", fake_complete)
+    monkeypatch.setattr(llm, "mock", True)
     startup()
     context = build_assistant_context()
     assert "active_agents" in context
-    response = asyncio.run(assistant_chat(AssistantChatRequest(message="当前平台有哪些Agent？", page="/agents")))
+    response = resolve(assistant_chat(AssistantChatRequest(message="当前平台有哪些Agent？", page="/agents")))
     assert response.data["reply"]
     assert response.data["mode"] == "mock"
 
@@ -60,7 +78,7 @@ def test_knowledge_api_round_trip(tmp_path, monkeypatch):
     original_root = agent_logic.knowledge.root
     monkeypatch.setattr(agent_logic.knowledge, "root", tmp_path / "knowledge")
     try:
-        created = asyncio.run(create_knowledge(KnowledgeDocumentCreate(
+        created = resolve(create_knowledge(KnowledgeDocumentCreate(
             filename="sampling.md",
             title="抽样设计测试资料",
             organization="测试实验室",
@@ -69,19 +87,19 @@ def test_knowledge_api_round_trip(tmp_path, monkeypatch):
             content="# 分层抽样\n\n分层变量、抽样框与各层样本量必须被记录。",
         ))).data
         assert created["title"] == "抽样设计测试资料"
-        assert len(asyncio.run(list_knowledge()).data) == 1
-        matches = asyncio.run(search_knowledge(KnowledgeSearchRequest(query="分层抽样样本量", limit=5))).data
+        assert len(resolve(list_knowledge()).data) == 1
+        matches = resolve(search_knowledge(KnowledgeSearchRequest(query="分层抽样样本量", limit=5))).data
         assert matches and matches[0]["title"] == "抽样设计测试资料"
-        assert asyncio.run(get_knowledge(created["id"])).data["url"] == "https://example.com/sampling"
-        assert asyncio.run(delete_knowledge(created["id"])).data["id"] == created["id"]
-        assert asyncio.run(list_knowledge()).data == []
+        assert resolve(get_knowledge(created["id"])).data["url"] == "https://example.com/sampling"
+        assert resolve(delete_knowledge(created["id"])).data["id"] == created["id"]
+        assert resolve(list_knowledge()).data == []
     finally:
         monkeypatch.setattr(agent_logic.knowledge, "root", original_root)
 
 
 def test_dynamic_dispatch_api_uses_task_characteristics():
     startup()
-    result = asyncio.run(recommend_dispatch(DispatchRecommendationRequest(
+    result = resolve(recommend_dispatch(DispatchRecommendationRequest(
         task="设计高校学生AI使用情况问卷与可复现统计分析方案，明确变量、样本和数据清洗方法"
     ))).data
     assert result["llm_called"] is False

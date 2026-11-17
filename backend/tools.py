@@ -5,6 +5,7 @@ import base64
 import binascii
 import operator
 import re
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -60,10 +61,24 @@ class LocalKnowledgeTool:
             title = metadata["title"].lower()
             for index, chunk in enumerate(self._chunks(text)):
                 lowered = chunk.lower()
-                score = sum((1 + min(len(term), 6)) * lowered.count(term) for term in terms)
-                score += sum(8 * (1 + min(len(term), 6)) for term in terms if term in title)
-                if score:
-                    matches.append({"source": str(path), "title": metadata["title"], "organization": metadata["organization"], "published_at": metadata["published_at"], "url": metadata["url"], "chunk": str(index + 1), "score": str(score), "snippet": chunk[:700]})
+                matched = {term for term in terms if term in lowered or term in title}
+                total_weight = sum(max(2, min(len(term), 6)) for term in terms) or 1
+                matched_weight = sum(max(2, min(len(term), 6)) for term in matched)
+                coverage = matched_weight / total_weight
+                strong_matches = {term for term in matched if len(term) >= 3}
+                # Refuse weak coincidental hits. A missing result is safer than unrelated evidence.
+                if coverage < 0.08 or (not strong_matches and len(matched) < 2):
+                    continue
+                title_hits = sum(1 for term in matched if term in title)
+                frequency_bonus = min(10, sum(min(lowered.count(term), 3) for term in matched))
+                score = min(100, round(coverage * 82 + min(12, title_hits * 3) + frequency_bonus))
+                matches.append({
+                    "source": str(path), "title": metadata["title"], "organization": metadata["organization"],
+                    "published_at": metadata["published_at"], "url": metadata["url"], "chunk": str(index + 1),
+                    "score": str(score), "coverage": f"{coverage:.2f}",
+                    "match_terms": sorted(strong_matches, key=lambda term: (-len(term), term))[:8],
+                    "snippet": chunk[:700],
+                })
         ranked = sorted(matches, key=lambda item: int(item["score"]), reverse=True)
         selected: list[dict[str, str]] = []
         per_source: dict[str, int] = {}
@@ -96,9 +111,13 @@ class LocalKnowledgeTool:
         documents = []
         if not self.root.exists():
             return documents
-        for path in sorted(self.root.rglob("*")):
-            if path.suffix.lower() not in {".md", ".txt"} or path.name.lower() == "readme.md":
-                continue
+        paths = [
+            path for path in self.root.rglob("*")
+            if path.suffix.lower() in {".md", ".txt"} and path.name.lower() != "readme.md"
+        ]
+        # Knowledge management is an ingestion timeline: foundational files
+        # remain at the top and newly imported evidence is appended below.
+        for path in sorted(paths, key=lambda item: (item.stat().st_mtime_ns, item.as_posix().lower())):
             raw = path.read_text(encoding="utf-8", errors="ignore")
             metadata, body = self._metadata(raw, path)
             relative = path.resolve().relative_to(self.root.resolve())
@@ -142,11 +161,26 @@ class LocalKnowledgeTool:
         path.write_text(header + content.strip() + "\n", encoding="utf-8")
         return self.read_document(self._document_id(path))
 
+    def add_external_document(self, provider: str, identity: str, title: str, content: str, metadata: dict[str, str]) -> tuple[dict, bool]:
+        """Persist normalized external evidence once, using DOI/URL as a stable identity."""
+        digest = sha256(identity.strip().lower().encode("utf-8")).hexdigest()[:18]
+        safe_provider = re.sub(r"[^a-z0-9_-]+", "-", provider.lower()).strip("-") or "external"
+        folder = self.root / "external"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{safe_provider}-{digest}.md"
+        if path.exists():
+            return self.read_document(self._document_id(path)), False
+        header = (
+            "---\n" f"title: {title.strip() or '外部检索资料'}\n"
+            f"organization: {metadata.get('organization', provider).strip()}\n"
+            f"published_at: {metadata.get('published_at', '').strip()}\n"
+            f"url: {metadata.get('url', '').strip()}\n" "---\n\n"
+        )
+        path.write_text(header + content.strip() + "\n", encoding="utf-8")
+        return self.read_document(self._document_id(path)), True
+
     def delete_document(self, document_id: str) -> bool:
         path = self._path_from_id(document_id)
-        relative = path.resolve().relative_to(self.root.resolve())
-        if "uploads" not in relative.parts:
-            raise PermissionError("内置知识文档受保护，不能在页面中删除")
         if not path.exists():
             return False
         path.unlink()

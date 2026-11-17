@@ -1,13 +1,16 @@
 import asyncio
+import sys
 
 import pytest
 
 from backend.database import Database, db
-from backend.engine import normalize_validation, run_manager, select_best_result
+from backend.engine import clean_report_output, evaluate_deliverable, normalize_validation, rework_improved, run_manager, select_best_result
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
 from backend.tools import CalculatorTool, LocalKnowledgeTool
+from backend.report_export import build_report_docx
+from backend.external_knowledge import ExternalRecord, _openalex_abstract
 
 
 def test_workflow_rejects_invalid_threshold():
@@ -59,14 +62,49 @@ def test_knowledge_documents_can_be_added_previewed_searched_and_deleted(tmp_pat
     assert tool.list_documents() == []
 
 
-def test_builtin_knowledge_document_cannot_be_deleted(tmp_path):
+def test_builtin_knowledge_document_can_be_deleted_from_management(tmp_path):
     root = tmp_path / "knowledge"
     root.mkdir()
     (root / "protected.md").write_text("# 内置资料\n\n受保护内容", encoding="utf-8")
     tool = LocalKnowledgeTool(str(root))
     document_id = tool.list_documents()[0]["id"]
-    with pytest.raises(PermissionError):
-        tool.delete_document(document_id)
+    assert tool.delete_document(document_id) is True
+    assert tool.list_documents() == []
+
+
+def test_knowledge_retrieval_rejects_unrelated_generic_hit(tmp_path):
+    (tmp_path / "policy.md").write_text("# 人工智能治理\n\n人工智能系统需要风险管理。", encoding="utf-8")
+    tool = LocalKnowledgeTool(str(tmp_path))
+    assert tool.search("研究医学影像分割中的卷积神经网络标注一致性和Dice系数", limit=3) == []
+
+
+def test_external_evidence_is_deduplicated_by_stable_identity(tmp_path):
+    tool = LocalKnowledgeTool(str(tmp_path / "knowledge"))
+    record = ExternalRecord(
+        provider="OpenAlex", title="可追溯科研文献", summary="这是可检索摘要。",
+        url="https://doi.org/10.1000/example", doi="10.1000/example", authors="张三", published_at="2026-01-01",
+    )
+    first, first_created = tool.add_external_document(record.provider, record.identity, record.title, record.markdown(), {"url": record.url, "published_at": record.published_at})
+    second, second_created = tool.add_external_document(record.provider, record.identity, record.title, record.markdown(), {"url": record.url, "published_at": record.published_at})
+    assert first_created is True and second_created is False
+    assert first["id"] == second["id"] and len(tool.list_documents()) == 1
+    assert _openalex_abstract({"科研": [1], "智能": [0]}) == "智能 科研"
+
+
+def test_literature_async_prepare_records_external_ingestion(monkeypatch):
+    async def fake_search(_: str):
+        return {"providers": ["OpenAlex"], "found": 2, "imported": [{"id": "x", "provider": "OpenAlex", "title": "论文", "url": "https://example.com"}], "duplicates": 1, "errors": []}
+    monkeypatch.setattr(agent_logic.external, "search_and_ingest", fake_search)
+    coroutine = agent_logic.prepare_async("literature", "人工智能科研治理", "基础输入")
+    try:
+        coroutine.send(None)
+    except StopIteration as completed:
+        prompt, calls = completed.value
+    else:
+        raise AssertionError("测试协程执行了未隔离的异步 I/O")
+    assert calls[0]["tool"] == "external_knowledge_search"
+    assert calls[0]["result_count"] == 1
+    assert "新增入库1条" in prompt
 
 
 def test_agents_have_distinct_protocols_and_tools():
@@ -83,6 +121,8 @@ def test_writer_enforces_requested_length_and_revision_rules():
     assert "900至1100字" in prompt
     assert "只输出最终Markdown正文" in prompt
     assert "逐条落实评审意见" in prompt
+    assert "可直接交付的科研报告" in prompt
+    assert "全文只说明一次" in prompt
 
 
 def test_literature_forbids_claiming_local_retrieval_gap_is_research_gap():
@@ -106,6 +146,7 @@ def test_fact_checker_and_reviewer_have_feedback_budgets():
     assert "事实核验独立检索结果" in fact_prompt
     assert fact_tools[0]["tool"] == "local_knowledge_recheck"
     assert "分别最多6项" in review_prompt
+    assert "沿用与上一轮完全相同的量表" in review_prompt
 
 
 def test_approval_options_parse_and_fallback():
@@ -122,6 +163,7 @@ def test_database_round_trip(tmp_path):
     assert database.get("agents", "a1")["name"] == "agent"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="完整异步集成测试需要允许本地 socketpair 的运行环境")
 def test_full_research_loop_reaches_threshold():
     async def scenario():
         db.initialize()
@@ -171,6 +213,48 @@ def test_validation_normalizes_dimension_objects():
     assert result["dimension_comments"] == {"事实准确性": "引用仍需核对"}
 
 
+def test_validation_uses_weighted_rubric_when_all_dimensions_are_present():
+    result = normalize_validation({
+        "score": 10,
+        "dimensions": {
+            "完整性": 90,
+            "逻辑性": 80,
+            "可验证性": 70,
+            "约束符合度": 100,
+            "表达质量与可交付性": 80,
+        },
+        "critical_flags": {},
+    })
+    assert result["score"] == 84
+    assert result["score_basis"] == "weighted_rubric_v1"
+    assert result["critical_flags"] == {
+        "fabricated_data": False,
+        "unverifiable_core_citations": False,
+        "missing_required_deliverable": False,
+        "violated_explicit_constraints": False,
+    }
+
+
+def test_validation_applies_critical_score_caps():
+    dimensions = {
+        "完整性": 95,
+        "逻辑性": 95,
+        "可验证性": 95,
+        "约束符合度": 95,
+        "表达质量与可交付性": 95,
+    }
+    fabricated = normalize_validation({
+        "score": 95, "dimensions": dimensions,
+        "critical_flags": {"fabricated_data": True},
+    })
+    constraint_failure = normalize_validation({
+        "score": 95, "dimensions": dimensions,
+        "critical_flags": {"violated_explicit_constraints": True},
+    })
+    assert fabricated["score"] == 59
+    assert constraint_failure["score"] == 79
+
+
 def test_validation_normalizes_structured_issues():
     result = normalize_validation({
         "score": 75,
@@ -210,4 +294,54 @@ def test_best_result_selects_matching_writer_version():
     assert run["latest_score"] == 62
     assert run["selected_loop"] == 0
     assert run["final_output"] == "第一版报告"
+
+
+def test_word_export_contains_only_formal_report_content():
+    from io import BytesIO
+    from docx import Document
+
+    content = build_report_docx(
+        "# 高校科研人工智能应用研究报告\n\n## 摘要\n\n本文分析应用价值与风险。\n\n**关键词：** 人工智能；科研管理\n\n## 一、研究背景\n\n这是报告正文。\n\n## 参考来源\n\n- 科技伦理审查办法（https://example.com/source）",
+        "备用标题",
+    )
+    assert content[:2] == b"PK"
+    document = Document(BytesIO(content))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "高校科研人工智能应用研究报告" in text
+    assert "摘要" in text and "关键词" in text and "参考来源" in text
+    assert "工具调用审计" not in text and "执行时间线" not in text
+    assert "#" not in text and "**" not in text
+    assert all(not "".join(p.text for p in section.header.paragraphs).strip() for section in document.sections)
+    footer_xml = "".join(section.footer._element.xml for section in document.sections)
+    assert "PAGE" in footer_xml and "NUMPAGES" not in footer_xml
+    assert document.paragraphs[0].alignment == 1
+    assert "w:pBdr" not in document.paragraphs[0]._p.xml
+    abstract_paragraph = next(paragraph for paragraph in document.paragraphs if paragraph.text == "摘要")
+    assert abstract_paragraph.alignment == 1
+
+
+def test_report_cleanup_removes_process_labels():
+    value = clean_report_output("# 正式报告（设计稿，未实施，无真实数据）\n\n生成说明：这是模型生成过程。\n\n## 摘要\n\n专业正文。")
+    assert "设计稿" not in value and "无真实数据" not in value and "生成说明" not in value
+    assert "正式报告" in value and "专业正文" in value
+
+
+def test_rework_requires_score_improvement():
+    assert rework_improved(72, 80) is True
+    assert rework_improved(78, 78) is False
+    assert rework_improved(78, 72) is False
+
+
+def test_delivery_metrics_are_deterministic():
+    run = {
+        "task": "撰写一份约1000字报告，覆盖数据安全与风险",
+        "final_output": "# 数据安全研究报告\n\n## 摘要\n\n" + "数据安全与风险分析。" * 100 + "\n来源：https://example.com/a",
+        "node_runs": [{"tool_calls": [{"tool": "local_knowledge", "results": [{
+            "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"
+        }]}]}],
+    }
+    metrics = evaluate_deliverable(run)
+    assert metrics["citation_coverage"] == {"cited": 1, "retrieved": 1, "percent": 100}
+    assert metrics["constraint_compliance"]["total"] >= 5
+    assert metrics["constraint_compliance"]["percent"] > 0
 

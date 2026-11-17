@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -21,6 +22,49 @@ def _safe_json(value: str) -> dict:
         if start >= 0 and end > start:
             return json.loads(value[start:end + 1])
         raise RuntimeError("评审Agent未返回有效JSON")
+
+
+REVIEW_DIMENSION_WEIGHTS = {
+    "完整性": 0.20,
+    "逻辑性": 0.20,
+    "可验证性": 0.25,
+    "约束符合度": 0.20,
+    "表达质量与可交付性": 0.15,
+}
+
+REVIEW_DIMENSION_ALIASES = {
+    "完整性": ("完整性",),
+    "逻辑性": ("逻辑性", "逻辑一致性"),
+    "可验证性": ("可验证性", "可验证性与来源", "来源可靠性", "事实准确性"),
+    "约束符合度": ("约束符合度", "约束符合性"),
+    "表达质量与可交付性": ("表达质量与可交付性", "表达质量", "可交付性", "表达清晰度"),
+}
+
+CRITICAL_SCORE_CAPS = {
+    "fabricated_data": 59,
+    "unverifiable_core_citations": 69,
+    "missing_required_deliverable": 69,
+    "violated_explicit_constraints": 79,
+}
+
+
+def _canonical_review_dimensions(dimensions: dict[str, int]) -> dict[str, int]:
+    canonical: dict[str, int] = {}
+    for target, aliases in REVIEW_DIMENSION_ALIASES.items():
+        for alias in aliases:
+            if alias in dimensions:
+                canonical[target] = dimensions[alias]
+                break
+    return canonical
+
+
+def _weighted_review_score(dimensions: dict[str, int], flags: dict[str, bool]) -> int | None:
+    canonical = _canonical_review_dimensions(dimensions)
+    if set(canonical) != set(REVIEW_DIMENSION_WEIGHTS):
+        return None
+    score = round(sum(canonical[name] * weight for name, weight in REVIEW_DIMENSION_WEIGHTS.items()))
+    active_caps = [cap for name, cap in CRITICAL_SCORE_CAPS.items() if flags.get(name, False)]
+    return min([score, *active_caps]) if active_caps else score
 
 
 def normalize_validation(value: dict) -> dict:
@@ -70,13 +114,38 @@ def normalize_validation(value: dict) -> dict:
                 normalized_dimensions[str(name)] = max(0, min(100, int(float(raw_score or 0))))
             except (TypeError, ValueError):
                 normalized_dimensions[str(name)] = 0
-    return {
-        "score": int(value.get("score", value.get("total_score", 0)) or 0),
+    raw_flags = value.get("critical_flags") or {}
+    critical_flags = {
+        name: bool(raw_flags.get(name, False)) if isinstance(raw_flags, dict) else False
+        for name in CRITICAL_SCORE_CAPS
+    }
+    model_score = max(0, min(100, int(value.get("score", value.get("total_score", 0)) or 0)))
+    weighted_score = _weighted_review_score(normalized_dimensions, critical_flags)
+    result = {
+        "score": weighted_score if weighted_score is not None else model_score,
         "dimensions": normalized_dimensions,
         "dimension_comments": dimension_comments,
         "issues": string_list(issues),
         "suggestions": string_list(suggestions),
     }
+    if weighted_score is not None:
+        result["critical_flags"] = critical_flags
+        result["score_basis"] = "weighted_rubric_v1"
+    return result
+
+
+def clean_report_output(value: str) -> str:
+    """Remove process labels that do not belong in a reader-facing research report."""
+    value = re.sub(r"[（(][^（）()]{0,40}(?:设计稿|未实施|无真实数据)[^（）()]{0,40}[）)]", "", value)
+    value = re.sub(r"(?m)^\s*(?:特别说明|写作说明|生成说明|自检说明)[:：].*(?:\n|$)", "", value)
+    value = re.sub(r"(?m)^\s*(?:[-*]\s*)?(?:本报告为|本文为)?(?:设计稿|未实施版本|无真实数据版本)[，,。；;：:].*(?:\n|$)", "", value)
+    value = re.sub(r"(?:本报告|本文)(?:属于|仅为|是)(?:一份)?(?:设计稿|未实施版本)(?:，|,)?", "", value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def rework_improved(previous_score: int, candidate_score: int) -> bool:
+    """Continue automatic rework only when the candidate improves the audited score."""
+    return candidate_score > previous_score
 
 
 def select_best_result(run: dict) -> bool:
@@ -119,6 +188,56 @@ def select_best_result(run: dict) -> bool:
     run["final_output"] = best_output
     run["validation"] = best_validation
     return changed
+
+
+def evaluate_deliverable(run: dict) -> dict:
+    """Compute deterministic citation and explicit-constraint acceptance metrics."""
+    output = run.get("final_output") or ""
+    evidence: dict[str, dict] = {}
+    for node_run in run.get("node_runs", []):
+        for call in node_run.get("tool_calls", []):
+            if call.get("tool") not in {"local_knowledge", "local_knowledge_recheck"}:
+                continue
+            for item in call.get("results", []):
+                key = f"{item.get('source', '')}:{item.get('chunk', '')}"
+                evidence[key] = item
+    cited = [
+        item for item in evidence.values()
+        if (item.get("url") and item["url"] in output) or (item.get("title") and item["title"] in output)
+    ]
+    citation_total = len(evidence)
+
+    checks: list[dict[str, object]] = []
+    checks.append({"name": "已生成正式成果", "passed": bool(output.strip())})
+    checks.append({
+        "name": "包含报告标题与正文结构",
+        "passed": bool(re.search(r"(?m)^#\s+.+", output) and re.search(r"(?m)^##\s+.+", output)),
+    })
+    checks.append({
+        "name": "未混入过程性说明",
+        "passed": not bool(re.search(r"设计稿|未实施|无真实数据|写作说明|自检说明|Agent分工", output)),
+    })
+    task = run.get("task") or ""
+    target = re.search(r"约\s*(\d{3,5})\s*字", task)
+    if target:
+        expected = int(target.group(1))
+        visible = len(re.sub(r"\s|[#*`>|_-]", "", output))
+        checks.append({"name": f"篇幅约{expected}字", "passed": expected * 0.75 <= visible <= expected * 1.35})
+    for term in ("数据安全", "个人信息保护", "学术诚信", "治理建议", "风险", "研究方法", "局限"):
+        if term in task:
+            checks.append({"name": f"覆盖明确要求：{term}", "passed": term in output})
+    satisfied = sum(1 for check in checks if check["passed"])
+    return {
+        "citation_coverage": {
+            "cited": len(cited), "retrieved": citation_total,
+            "percent": round(len(cited) / citation_total * 100) if citation_total else 0,
+        },
+        "constraint_compliance": {
+            "satisfied": satisfied, "total": len(checks),
+            "percent": round(satisfied / len(checks) * 100) if checks else 0,
+            "checks": checks,
+        },
+    }
 
 
 class RunManager:
@@ -196,9 +315,14 @@ class RunManager:
             run["score"] = int(validation.get("score", 0))
             while run["score"] < workflow["quality_threshold"] and run["loop_count"] < workflow["max_loop_count"]:
                 self._assert_not_cancelled(run_id)
+                previous_score = int(run["score"])
                 run["loop_count"] += 1
                 await self.emit(run_id, "run.rework", {"loop_count": run["loop_count"], "issues": validation.get("issues", [])})
-                feedback = "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])])
+                feedback = (
+                    f"上一轮统一量表评分：{previous_score}分。只修复下列影响验收的关键问题，"
+                    "不得扩展无关主题、增加重复免责声明或把核验过程写入报告正文。\n"
+                    + "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])])
+                )
                 previous_draft = completed.get("writer", "")
                 completed["writer"] = await self._execute_node(
                     run, nodes["writer"], completed, feedback=feedback, rework=True,
@@ -211,9 +335,16 @@ class RunManager:
                 run["validation"] = validation
                 run["score"] = int(validation.get("score", 0))
                 self.save(run)
+                if not rework_improved(previous_score, run["score"]):
+                    await self.emit(run_id, "run.rework_stopped", {
+                        "reason": "score_not_improved", "previous_score": previous_score,
+                        "candidate_score": run["score"], "loop_count": run["loop_count"],
+                    })
+                    break
 
             run["final_output"] = completed.get("writer")
             select_best_result(run)
+            run["delivery_metrics"] = evaluate_deliverable(run)
             run["status"] = "completed"
             run["progress"] = 100
             run["finished_at"] = utc_now()
@@ -257,7 +388,7 @@ class RunManager:
             prompt += f"\n评审反馈：{feedback}\n请针对反馈修订。"
         if run.get("human_feedback") and node["id"] != "requirements":
             prompt += f"\n人工确认意见：{run['human_feedback']}\n后续工作必须遵循该意见。"
-        prompt, tool_calls = agent_logic.prepare(node["agent_id"], run["task"], prompt)
+        prompt, tool_calls = await agent_logic.prepare_async(node["agent_id"], run["task"], prompt)
         node_run["input"] = prompt
         node_run["tool_calls"] = tool_calls
         run["node_runs"].append(node_run)
@@ -271,6 +402,8 @@ class RunManager:
                     llm.complete(agent["system_prompt"], prompt, json_mode=node["kind"] == "validator"),
                     timeout=node["timeout_seconds"],
                 )
+                if node["id"] == "writer":
+                    output = clean_report_output(output)
                 run["token_usage"] += tokens
                 node_run.update(status="completed", output=output, retry_count=attempt, finished_at=utc_now())
                 if node["kind"] == "validator":
@@ -364,9 +497,15 @@ class RunManager:
             run["final_output"] = completed["writer"]
             run["latest_score"] = run["score"]
             run["selected_loop"] = run["loop_count"]
+            candidate_score = run["score"]
+            candidate_loop = run["loop_count"]
+            select_best_result(run)
+            run["delivery_metrics"] = evaluate_deliverable(run)
             run["status"] = "completed"
             run["final_acceptance"] = {
                 **(run.get("final_acceptance") or {}), "status": "revised", "ready_at": utc_now(),
+                "candidate_score": candidate_score, "adopted_score": run["score"],
+                "improvement_adopted": run.get("selected_loop") == candidate_loop,
             }
             run["finished_at"] = utc_now()
             self.save(run)
