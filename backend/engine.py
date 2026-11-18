@@ -171,11 +171,6 @@ def clean_report_output(value: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
-def rework_improved(previous_score: int, candidate_score: int) -> bool:
-    """Continue automatic rework only when the candidate improves the audited score."""
-    return candidate_score > previous_score
-
-
 def rework_agent_ids(validation: dict, available: set[str]) -> list[str]:
     """Route review findings back to the upstream owners that can actually repair them."""
     feedback = "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])]).lower()
@@ -189,6 +184,11 @@ def rework_agent_ids(validation: dict, available: set[str]) -> list[str]:
         if agent_id in available and any(term in feedback for term in terms):
             selected.append(agent_id)
     return selected
+
+
+def automatic_rework_required(score: int, quality_threshold: int, loop_count: int, max_loop_count: int) -> bool:
+    """Keep reworking until the quality gate passes or the configured loop budget is exhausted."""
+    return score < quality_threshold and loop_count < max_loop_count
 
 
 def select_best_result(run: dict) -> bool:
@@ -415,7 +415,9 @@ class RunManager:
             )
             run["validation"] = validation
             run["score"] = int(validation.get("score", 0))
-            while run["score"] < workflow["quality_threshold"] and run["loop_count"] < workflow["max_loop_count"]:
+            while automatic_rework_required(
+                run["score"], workflow["quality_threshold"], run["loop_count"], workflow["max_loop_count"]
+            ):
                 self._assert_not_cancelled(run_id)
                 previous_score = int(run["score"])
                 run["loop_count"] += 1
@@ -443,13 +445,6 @@ class RunManager:
                 run["validation"] = validation
                 run["score"] = int(validation.get("score", 0))
                 self.save(run)
-                if not rework_improved(previous_score, run["score"]):
-                    await self.emit(run_id, "run.rework_stopped", {
-                        "reason": "score_not_improved", "previous_score": previous_score,
-                        "candidate_score": run["score"], "loop_count": run["loop_count"],
-                    })
-                    break
-
             run["final_output"] = completed.get("writer")
             select_best_result(run)
             run["delivery_metrics"] = evaluate_deliverable(run)

@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from backend.database import Database, db
-from backend.engine import clean_report_output, enforce_deliverable_validation, evaluate_deliverable, normalize_validation, rework_agent_ids, rework_improved, run_manager, select_best_result
+from backend.engine import automatic_rework_required, clean_report_output, enforce_deliverable_validation, evaluate_deliverable, normalize_validation, rework_agent_ids, run_manager, select_best_result
 from backend.agent_logic import agent_logic, extract_approval_options
 from backend.schemas import WorkflowCreate, WorkflowNode
 from backend.seed import seed_defaults
@@ -228,10 +228,10 @@ def test_full_research_loop_applies_delivery_gate():
     # the lower audited score instead of reporting a false pass.
     assert result["score"] == 69
     assert result["validation"]["critical_flags"]["missing_required_deliverable"] is True
-    assert result["loop_count"] == 1
-    assert len(result["node_runs"]) >= 10
-    assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == 2
-    assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == 2
+    assert result["loop_count"] == result["workflow_snapshot"]["max_loop_count"]
+    assert len(result["node_runs"]) >= 18
+    assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
+    assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
     assert result["approval"]["status"] == "approved"
     assert "本科生" in result["human_feedback"]
 
@@ -414,10 +414,12 @@ def test_review_feedback_routes_to_responsible_upstream_agents():
     assert "analyst" in selected
 
 
-def test_rework_requires_score_improvement():
-    assert rework_improved(72, 80) is True
-    assert rework_improved(78, 78) is False
-    assert rework_improved(78, 72) is False
+def test_automatic_rework_runs_until_threshold_or_loop_budget_is_exhausted():
+    assert automatic_rework_required(69, 80, 0, 3) is True
+    assert automatic_rework_required(69, 80, 1, 3) is True
+    assert automatic_rework_required(60, 80, 2, 3) is True
+    assert automatic_rework_required(60, 80, 3, 3) is False
+    assert automatic_rework_required(80, 80, 1, 3) is False
 
 
 def test_delivery_metrics_are_deterministic():
