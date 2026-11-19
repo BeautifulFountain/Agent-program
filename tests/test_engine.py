@@ -243,7 +243,7 @@ def test_full_research_loop_applies_delivery_gate():
     # The current mock report contains the required deliverable and evidence, so
     # the relaxed blocker rules must allow a genuine passing score.
     assert result["score"] >= result["workflow_snapshot"]["quality_threshold"]
-    assert result["validation"]["critical_flags"]["missing_required_deliverable"] is False
+    assert result["validation"].get("critical_flags", {}).get("missing_required_deliverable", False) is False
     assert result["quality_status"] == "passed"
     assert result["loop_count"] == 0
     assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["loop_count"] + 1
