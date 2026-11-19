@@ -8,9 +8,17 @@
     padding: 0 32px;
   }
 
-  .topbar .context { grid-column: 2; justify-self: center; }
+  .topbar .context {
+    grid-column: 2;
+    justify-self: center;
+    gap: 10px;
+    font-size: 18px;
+    line-height: 1.2;
+    letter-spacing: -0.015em;
+  }
   .topbar .context > span { display: flex; align-items: center; gap: 8px; }
-  .topbar .context strong { color: #102a46; }
+  .topbar .context strong { color: #102a46; white-space: nowrap; }
+  .topbar .context-icon { color: #183b60; flex: 0 0 auto; }
   .topbar .context em {
     padding-left: 8px;
     border-left: 1px solid #ccd7e2;

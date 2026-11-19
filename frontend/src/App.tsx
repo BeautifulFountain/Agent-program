@@ -33,7 +33,7 @@ export default function App() {
     <main>
       <header className="topbar">
         <button className="menu-button icon-button" aria-label="打开导航" onClick={() => setOpen(true)}><Menu size={21}/></button>
-        <div className="context"><FlaskConical size={16}/><strong>AgentFlow 科研多智能体协作平台</strong></div>
+        <div className="context"><FlaskConical className="context-icon" size={20} aria-hidden="true"/><strong>AgentFlow 科研多智能体协作平台</strong></div>
         <div className="system-chip"><Activity size={15}/><span>系统正常</span></div>
       </header>
       <div className="content">
