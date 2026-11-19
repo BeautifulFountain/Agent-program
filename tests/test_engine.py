@@ -95,7 +95,8 @@ def test_literature_review_search_focus_and_relevance_filter():
     task = "分析大语言模型在文献数据检索、主题归纳、研究空白识别和综述写作中的价值与局限"
     query = ExternalKnowledgeService.focus_query(task)
     assert "systematic literature review" in query
-    assert len(ExternalKnowledgeService.focus_queries(task)) == 2
+    assert len(ExternalKnowledgeService.focus_queries(task)) == 3
+    assert "大语言模型" in ExternalKnowledgeService.focus_queries(task)[0]
     assert ExternalKnowledgeService.relevant_to_task(task, "Large language models for systematic literature reviews") is True
     assert ExternalKnowledgeService.relevant_to_task(task, "PRISMA 2020 statement for systematic reviews") is True
     assert ExternalKnowledgeService.relevant_to_task(task, 'Review for "Large language models for literature reviews"') is False
@@ -116,6 +117,12 @@ def test_generic_search_plan_normalizes_concept_groups():
     assert ExternalKnowledgeService.relevant_to_search(
         "Computer vision for medical image segmentation", "", searches[0]
     ) is False
+
+
+def test_content_relevance_below_fifty_is_rejected():
+    assert ExternalKnowledgeService.passes_relevance_threshold(49, "有摘要") is False
+    assert ExternalKnowledgeService.passes_relevance_threshold(50, "有摘要") is True
+    assert ExternalKnowledgeService.passes_relevance_threshold(82, "") is False
 
 
 def test_literature_async_prepare_records_external_ingestion(monkeypatch):
@@ -394,9 +401,10 @@ def test_report_cleanup_keeps_only_numbered_formal_references():
 
 
 def test_deterministic_gate_caps_zero_citation_report():
-    run = {"task": "研究任务", "node_runs": [{"tool_calls": [{"tool": "local_knowledge", "results": [{
-        "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"
-    }]}]}]}
+    run = {"task": "研究任务", "node_runs": [{
+        "node_id": "writer", "status": "completed", "loop": 0,
+        "evidence_snapshot": [{"evidence_id": "E1", "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"}],
+    }]}
     validation = {"score": 92, "issues": [], "suggestions": [], "critical_flags": {}}
     result = enforce_deliverable_validation(run, validation, "# 报告\n\n## 摘要\n\n没有引用。")
     assert result["score"] == 69
@@ -426,14 +434,41 @@ def test_delivery_metrics_are_deterministic():
     run = {
         "task": "撰写一份约1000字报告，覆盖数据安全与风险",
         "final_output": "# 数据安全研究报告\n\n## 摘要\n\n" + "数据安全与风险分析。" * 100 + "\n来源：https://example.com/a",
-        "node_runs": [{"tool_calls": [{"tool": "local_knowledge", "results": [{
-            "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"
-        }]}]}],
+        "node_runs": [{
+            "node_id": "writer", "status": "completed", "loop": 0,
+            "evidence_snapshot": [{"evidence_id": "E1", "source": "a.md", "chunk": "1", "title": "资料A", "url": "https://example.com/a"}],
+        }],
     }
     metrics = evaluate_deliverable(run)
     assert metrics["citation_coverage"] == {"cited": 1, "retrieved": 1, "percent": 100}
     assert metrics["constraint_compliance"]["total"] >= 5
     assert metrics["constraint_compliance"]["percent"] > 0
+
+
+def test_citation_metrics_exclude_fact_checker_only_evidence():
+    run = {
+        "task": "研究任务",
+        "final_output": "# 报告\n\n## 正文\n\nhttps://example.com/fact-only",
+        "node_runs": [
+            {"node_id": "writer", "status": "completed", "loop": 0, "evidence_snapshot": []},
+            {"node_id": "fact-checker", "status": "completed", "loop": 0, "tool_calls": [{
+                "tool": "local_knowledge_recheck", "results": [{"title": "复检资料", "url": "https://example.com/fact-only"}],
+            }]},
+        ],
+    }
+    assert evaluate_deliverable(run)["citation_coverage"] == {"cited": 0, "retrieved": 0, "percent": 0}
+
+
+def test_citation_metrics_match_normalized_doi():
+    run = {
+        "task": "研究任务",
+        "final_output": "# 报告\n\n## 正文\n\n参考 DOI:10.1234/ABC.9。",
+        "node_runs": [{
+            "node_id": "writer", "status": "completed", "loop": 0,
+            "evidence_snapshot": [{"evidence_id": "E1", "title": "A sufficiently long title", "doi": "https://doi.org/10.1234/abc.9"}],
+        }],
+    }
+    assert evaluate_deliverable(run)["citation_coverage"] == {"cited": 1, "retrieved": 1, "percent": 100}
 
 
 

@@ -242,21 +242,54 @@ def select_best_result(run: dict) -> bool:
     return changed
 
 
+def _normalized_title(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", (value or "").lower())
+
+
+def _normalized_url(value: str) -> str:
+    value = (value or "").strip().lower().rstrip(".,;，。；)]}")
+    return re.sub(r"^https?://(?:www\.)?", "", value).rstrip("/")
+
+
+def _normalized_doi(value: str) -> str:
+    match = re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", (value or "").lower())
+    return match.group(0).rstrip(".,;，。；)]}") if match else ""
+
+
+def _writer_run_for_metrics(run: dict) -> dict | None:
+    selected_loop = run.get("selected_loop")
+    candidates = [
+        item for item in run.get("node_runs", [])
+        if item.get("node_id") == "writer" and item.get("status") == "completed"
+    ]
+    if selected_loop is not None:
+        selected = [item for item in candidates if int(item.get("loop", 0)) == int(selected_loop)]
+        if selected:
+            return selected[-1]
+    return candidates[-1] if candidates else None
+
+
+def _evidence_is_cited(item: dict, output: str) -> bool:
+    lowered = output.lower()
+    doi = _normalized_doi(str(item.get("doi") or item.get("url") or ""))
+    if doi and doi in lowered:
+        return True
+    url = _normalized_url(str(item.get("url") or ""))
+    if url and url in _normalized_url(output):
+        return True
+    title = _normalized_title(str(item.get("title") or ""))
+    return bool(len(title) >= 8 and title in _normalized_title(output))
+
+
 def evaluate_deliverable(run: dict) -> dict:
     """Compute deterministic citation and explicit-constraint acceptance metrics."""
     output = run.get("final_output") or ""
-    evidence: dict[str, dict] = {}
-    for node_run in run.get("node_runs", []):
-        for call in node_run.get("tool_calls", []):
-            if call.get("tool") not in {"local_knowledge", "local_knowledge_recheck"}:
-                continue
-            for item in call.get("results", []):
-                key = f"{item.get('source', '')}:{item.get('chunk', '')}"
-                evidence[key] = item
-    cited = [
-        item for item in evidence.values()
-        if (item.get("url") and item["url"] in output) or (item.get("title") and item["title"] in output)
-    ]
+    writer_run = _writer_run_for_metrics(run)
+    evidence = {
+        str(item.get("evidence_id") or f"{item.get('source', '')}:{item.get('chunk', '')}"): item
+        for item in ((writer_run or {}).get("evidence_snapshot") or [])
+    }
+    cited = [item for item in evidence.values() if _evidence_is_cited(item, output)]
     citation_total = len(evidence)
 
     checks: list[dict[str, object]] = []
@@ -337,6 +370,39 @@ def enforce_deliverable_validation(run: dict, validation: dict, output: str) -> 
             result["issues"].append(issue)
     result["deterministic_metrics"] = metrics
     return result
+
+
+def _latest_literature_evidence(run: dict, loop: int) -> list[dict]:
+    candidates = [
+        item for item in run.get("node_runs", [])
+        if item.get("node_id") == "literature" and item.get("status") == "completed"
+        and int(item.get("loop", 0)) <= loop
+    ]
+    if not candidates:
+        return []
+    latest = max(candidates, key=lambda item: int(item.get("loop", 0)))
+    evidence: list[dict] = []
+    for call in latest.get("tool_calls", []):
+        if call.get("tool") == "local_knowledge":
+            evidence.extend(call.get("results") or [])
+    return evidence
+
+
+def _number_evidence(items: list[dict], limit: int = 8) -> list[dict]:
+    selected: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _normalized_doi(str(item.get("doi") or item.get("url") or "")) or _normalized_url(str(item.get("url") or "")) or _normalized_title(str(item.get("title") or ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        value = deepcopy(item)
+        value["evidence_id"] = f"E{len(selected) + 1}"
+        value["doi"] = _normalized_doi(str(item.get("doi") or item.get("url") or ""))
+        selected.append(value)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 class RunManager:
@@ -501,7 +567,37 @@ class RunManager:
             prompt += f"\n评审反馈：{feedback}\n请针对反馈修订。"
         if run.get("human_feedback") and node["id"] != "requirements":
             prompt += f"\n人工确认意见：{run['human_feedback']}\n后续工作必须遵循该意见。"
-        prompt, tool_calls = await agent_logic.prepare_async(node["agent_id"], run["task"], prompt)
+        research_context = "\n\n".join(filter(None, [
+            run["task"],
+            completed.get("requirements", ""),
+            completed.get("planner", ""),
+            run.get("human_feedback") or "",
+        ]))
+        prompt, tool_calls = await agent_logic.prepare_async(
+            node["agent_id"], run["task"], prompt, research_context=research_context,
+        )
+        if node["id"] == "writer":
+            evidence = _latest_literature_evidence(run, int(run["loop_count"]))
+            if not evidence:
+                query, evidence, planning_tokens = await agent_logic.prepare_writer_evidence(run["task"], research_context)
+                tool_calls.append({
+                    "tool": "writer_evidence", "query": query, "result_count": len(evidence),
+                    "results": evidence, "token_usage": planning_tokens,
+                })
+            evidence_snapshot = _number_evidence(evidence)
+            node_run["evidence_snapshot"] = evidence_snapshot
+            if evidence_snapshot:
+                prompt += (
+                    "\n\n[本轮写作可用证据清单]\n"
+                    + json.dumps(evidence_snapshot, ensure_ascii=False)
+                    + "\n只能引用此清单中的证据。E1对应参考文献[1]、E2对应[2]，依次类推；"
+                    "正文必须引用实际支撑论点的证据，并保留准确题名、DOI或URL。不得自行生成清单外文献。"
+                )
+            else:
+                prompt += (
+                    "\n\n[本轮写作可用证据清单]\n未获得与任务内容相符且含题名摘要的有效证据。"
+                    "不得虚构参考文献；应完成无需外部事实支撑的任务结构，并明确将需要来源的结论标为待核验。"
+                )
         run["token_usage"] += sum(int(call.get("token_usage") or 0) for call in tool_calls)
         node_run["input"] = prompt
         node_run["tool_calls"] = tool_calls

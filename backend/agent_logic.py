@@ -95,12 +95,13 @@ class AgentLogic:
         try:
             from backend.llm import llm
             system = (
-                "你是学术数据库检索规划器。仅输出JSON，不回答研究问题。根据任务生成2至3条英文检索式。"
+                "你是学术数据库检索规划器。仅输出JSON，不回答研究问题。根据任务生成2至4条中英文检索式。"
+                "中文任务至少包含1条中文检索式和1条英文同义检索式；不得因文献语言不同而改变相关性标准。"
                 "每条检索式必须包含query和must_include_groups；must_include_groups是二维字符串数组，"
                 "每组表示同义概念，候选文献必须在标题或摘要中命中每一组中的至少一个词。"
                 "不同检索式可分别覆盖核心主题、研究方法或权威标准。不得写作者、年份或不存在的论文题名。"
             )
-            prompt = f"研究任务：{task}\n输出格式：{{\"searches\":[{{\"query\":\"...\",\"must_include_groups\":[[\"term a\",\"synonym\"],[\"term b\"]]}}]}}"
+            prompt = f"研究任务：{task}\n输出格式：{{\"searches\":[{{\"query\":\"...\",\"must_include_groups\":[[\"中文词\",\"English synonym\"],[\"核心概念\"]]}}]}}"
             raw, tokens = await llm.complete(system, prompt, json_mode=True)
             try:
                 value = json.loads(raw)
@@ -122,15 +123,81 @@ class AgentLogic:
         ranked = sorted(accepted.values(), key=lambda item: int(item.get("score", 0)), reverse=True)
         return " | ".join(search["query"] for search in searches), ranked[:limit]
 
-    async def prepare_async(self, agent_id: str, task: str, base_prompt: str) -> tuple[str, list[dict]]:
+    async def content_relevant_matches(self, task_context: str, matches: list[dict]) -> tuple[list[dict], int]:
+        """Rerank local chunks against confirmed requirements; reject relevance scores below 50."""
+        if not matches:
+            return [], 0
+        try:
+            from backend.llm import llm
+            system = (
+                "你是科研证据内容相关性审核器。仅输出JSON。根据题名和证据片段判断其内容是否能支持任务。"
+                "不能只看关键词重合；研究对象、核心问题和任务要求必须对应。每项输出index、score、reason、"
+                "supported_claims、limitations。score为0到100，低于50代表不应进入本任务证据集。"
+            )
+            candidates = [
+                {"index": index, "title": item.get("title"), "content": item.get("snippet", "")[:1600]}
+                for index, item in enumerate(matches)
+            ]
+            raw, tokens = await llm.complete(
+                system,
+                f"任务与确认要求：\n{task_context[:6000]}\n\n候选证据：\n{json.dumps(candidates, ensure_ascii=False)}"
+                "\n输出格式：{\"results\":[{\"index\":0,\"score\":80,\"reason\":\"...\","
+                "\"supported_claims\":[\"...\"],\"limitations\":[\"...\"]}]}",
+                json_mode=True,
+            )
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                start, end = raw.find("{"), raw.rfind("}")
+                value = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+            assessments = {
+                int(item.get("index")): item for item in value.get("results", value.get("assessments", []))
+                if isinstance(item, dict) and str(item.get("index", "")).isdigit()
+            }
+            accepted = []
+            for index, item in enumerate(matches):
+                assessment = assessments.get(index, {})
+                score = max(0, min(100, int(assessment.get("score") or 0)))
+                if score < 50:
+                    continue
+                accepted.append({
+                    **item,
+                    "relevance_score": score,
+                    "relevance_reason": str(assessment.get("reason") or "").strip(),
+                    "supported_claims": assessment.get("supported_claims") or [],
+                    "limitations": assessment.get("limitations") or [],
+                })
+            return accepted, tokens
+        except Exception:
+            return matches, 0
+
+    async def prepare_async(
+        self, agent_id: str, task: str, base_prompt: str, research_context: str = "",
+    ) -> tuple[str, list[dict]]:
         """Enrich the literature node with durable external evidence before local retrieval."""
         external_call = None
         if agent_id == "literature":
-            searches, planning_tokens = await self.plan_searches(task)
+            evidence_task = research_context.strip() or task
+            searches, planning_tokens = await self.plan_searches(evidence_task)
             self.search_plans[task] = searches
-            external_call = await self.external.search_and_ingest(task, searches)
-            external_call["planning_tokens"] = planning_tokens
+            external_call = await self.external.search_and_ingest(evidence_task, searches)
+            external_call["planning_tokens"] = planning_tokens + int(external_call.get("relevance_tokens") or 0)
         prompt, tool_calls = self.prepare(agent_id, task, base_prompt)
+        if agent_id in {"literature", "fact-checker"}:
+            knowledge_tool = "local_knowledge" if agent_id == "literature" else "local_knowledge_recheck"
+            call = next((item for item in tool_calls if item.get("tool") == knowledge_tool), None)
+            if call is not None:
+                original = call.get("results") or []
+                filtered, relevance_tokens = await self.content_relevant_matches(research_context or task, original)
+                call["results"] = filtered
+                call["result_count"] = len(filtered)
+                call["discarded_irrelevant"] = len(original) - len(filtered)
+                call["token_usage"] = int(call.get("token_usage") or 0) + relevance_tokens
+                if original:
+                    prompt = prompt.replace(
+                        json.dumps(original, ensure_ascii=False),
+                        json.dumps(filtered, ensure_ascii=False) if filtered else "未发现内容相关性达到50分的证据；不得虚构来源。",
+                    )
         if external_call is not None:
             tool_calls.insert(0, {
                 "tool": "external_knowledge_search", "query": task, "search_query": external_call.get("search_query"),
@@ -150,6 +217,17 @@ class AgentLogic:
                 summary += "部分服务不可用：" + "；".join(external_call["errors"])
             prompt += summary
         return prompt, tool_calls
+
+    async def prepare_writer_evidence(self, task: str, research_context: str = "") -> tuple[str, list[dict], int]:
+        """Give workflows without a literature node the same traceable evidence contract."""
+        evidence_task = research_context.strip() or task
+        searches, planning_tokens = await self.plan_searches(evidence_task)
+        self.search_plans[task] = searches
+        external_call = await self.external.search_and_ingest(evidence_task, searches)
+        focused_query, matches = self.task_matches(task)
+        matches, relevance_tokens = await self.content_relevant_matches(evidence_task, matches)
+        total_tokens = planning_tokens + int(external_call.get("relevance_tokens") or 0) + relevance_tokens
+        return focused_query, matches, total_tokens
 
     def prepare(self, agent_id: str, task: str, base_prompt: str) -> tuple[str, list[dict]]:
         protocol = PROTOCOLS.get(agent_id)

@@ -42,6 +42,7 @@ export type NodeRun = {
   retry_count: number
   loop: number
   error: string | null
+  evidence_snapshot?: KnowledgeSearchResult[]
   tool_calls?: Array<{tool:string;query?:string;search_query?:string;expression?:string;result?:number|string;token_usage?:number;result_count?:number;found?:number;duplicates?:number;discarded_irrelevant?:number;providers?:string[];errors?:string[];results?:Array<KnowledgeSearchResult|{id:string;provider:string;title:string;url:string;doi?:string}>}>
 }
 
@@ -55,6 +56,8 @@ export type KnowledgeSearchResult = {
   source: string; title: string; organization: string; published_at: string
   url: string; chunk: string; score: string; snippet: string
   coverage?: string; match_terms?: string[]
+  evidence_id?: string; doi?: string; relevance_score?: number; relevance_reason?: string
+  supported_claims?: string[]; limitations?: string[]
 }
 
 export type DispatchRecommendation = {

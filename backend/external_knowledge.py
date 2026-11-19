@@ -61,16 +61,22 @@ class ExternalKnowledgeService:
         self.knowledge = knowledge
 
     @staticmethod
+    def passes_relevance_threshold(score: int, summary: str) -> bool:
+        return score >= 50 and bool(summary.strip())
+
+    @staticmethod
     def default_searches(task: str) -> list[dict[str, Any]]:
         """Deterministic fallback used only when dynamic search planning fails."""
-        query = ExternalKnowledgeService.focus_query(task)
-        return [{"query": query, "must_include_groups": []}]
+        return [
+            {"query": query, "must_include_groups": []}
+            for query in ExternalKnowledgeService.focus_queries(task)
+        ]
 
     @staticmethod
     def normalize_searches(value: Any, task: str) -> list[dict[str, Any]]:
         searches = value.get("searches", []) if isinstance(value, dict) else []
         normalized = []
-        for item in searches[:3]:
+        for item in searches[:4]:
             if not isinstance(item, dict):
                 continue
             query = _clean(str(item.get("query") or ""))[:300]
@@ -92,6 +98,76 @@ class ExternalKnowledgeService:
         groups = search.get("must_include_groups") or []
         return all(any(term.lower() in text for term in group) for group in groups)
 
+    async def assess_content_relevance(
+        self, task_context: str, records: list[ExternalRecord],
+    ) -> tuple[list[tuple[ExternalRecord, dict[str, Any]]], int]:
+        """Judge task fit from title plus abstract, rather than accepting keyword hits alone."""
+        if not records:
+            return [], 0
+        candidates = [
+            {
+                "index": index,
+                "title": record.title,
+                "abstract": record.summary[:1800],
+                "source": record.provider,
+            }
+            for index, record in enumerate(records[:30])
+        ]
+        try:
+            from backend.llm import llm
+            system = (
+                "你是科研证据相关性审核器。仅依据题名和摘要判断候选文献能否支持研究任务，输出JSON。"
+                "不能因共享宽泛关键词就判为相关；研究对象、核心问题和任务要求必须对应。"
+                "摘要为空或无法判断正文内容时不得作为核心证据。每项输出index、decision、score、reason、"
+                "supported_claims和limitations；decision只能是relevant或reject，score为0到100。"
+            )
+            prompt = (
+                f"任务与已确认要求：\n{task_context[:6000]}\n\n候选文献：\n"
+                + json.dumps(candidates, ensure_ascii=False)
+                + "\n输出格式：{\"assessments\":[{\"index\":0,\"decision\":\"relevant\",\"score\":85,"
+                  "\"reason\":\"...\",\"supported_claims\":[\"...\"],\"limitations\":[\"...\"]}]}"
+            )
+            raw, tokens = await llm.complete(system, prompt, json_mode=True)
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                start, end = raw.find("{"), raw.rfind("}")
+                value = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+            assessments = {
+                int(item.get("index")): item for item in value.get("assessments", [])
+                if isinstance(item, dict) and str(item.get("index", "")).isdigit()
+            }
+            accepted = []
+            for index, record in enumerate(records[:30]):
+                assessment = assessments.get(index, {})
+                score = max(0, min(100, int(assessment.get("score") or 0)))
+                if assessment.get("decision") == "relevant" and self.passes_relevance_threshold(score, record.summary):
+                    accepted.append((record, {
+                        "relevance_score": score,
+                        "relevance_reason": _clean(str(assessment.get("reason") or "")),
+                        "supported_claims": assessment.get("supported_claims") or [],
+                        "limitations": assessment.get("limitations") or [],
+                    }))
+            return accepted, tokens
+        except Exception:
+            accepted = []
+            task_terms = LocalKnowledgeTool._terms(task_context)
+            for record in records:
+                content_terms = LocalKnowledgeTool._terms(f"{record.title} {record.summary}")
+                overlap = task_terms & content_terms
+                score = round(100 * len(overlap) / max(1, min(len(task_terms), 12)))
+                if (
+                    self.passes_relevance_threshold(score, record.summary)
+                    and self.relevant_to_task(task_context, record.title, record.summary)
+                ):
+                    accepted.append((record, {
+                        "relevance_score": score,
+                        "relevance_reason": "语义审核不可用，已通过题名、摘要与任务要求的确定性内容重合检查",
+                        "supported_claims": [],
+                        "limitations": ["语义审核服务不可用，已退回确定性过滤"],
+                    }))
+            return accepted, 0
+
     @staticmethod
     def focus_query(task: str) -> str:
         """Translate verbose Chinese task instructions into a scholarly search intent."""
@@ -109,6 +185,7 @@ class ExternalKnowledgeService:
         primary = cls.focus_query(task)
         if ("大语言模型" in task or "llm" in task.lower()) and any(term in task for term in ("文献", "综述", "研究空白", "主题归纳")):
             return [
+                "大语言模型 文献综述 证据综合 文献检索 引用核验",
                 primary,
                 "systematic literature review methodology PRISMA evidence synthesis literature screening citation",
             ]
@@ -161,10 +238,12 @@ class ExternalKnowledgeService:
                         records.append(record)
                     else:
                         discarded_irrelevant += 1
+        assessed, relevance_tokens = await self.assess_content_relevance(query, records)
+        discarded_irrelevant += max(0, len(records) - len(assessed))
         imported: list[dict] = []
         duplicates = 0
         seen: set[str] = set()
-        for record in records:
+        for record, assessment in assessed:
             identity = record.identity.strip().lower()
             if not identity or identity in seen:
                 duplicates += 1
@@ -175,7 +254,10 @@ class ExternalKnowledgeService:
                 {"organization": record.organization or record.provider, "published_at": record.published_at, "url": record.url},
             )
             if created:
-                imported.append({"id": document["id"], "provider": record.provider, "title": record.title, "url": record.url, "doi": record.doi})
+                imported.append({
+                    "id": document["id"], "provider": record.provider, "title": record.title,
+                    "url": record.url, "doi": record.doi, **assessment,
+                })
             else:
                 duplicates += 1
         return {
@@ -183,6 +265,7 @@ class ExternalKnowledgeService:
             "searches": search_specs, "enabled": True, "providers": providers,
             "found": len(records), "discarded_irrelevant": discarded_irrelevant,
             "imported": imported, "duplicates": duplicates, "errors": errors,
+            "relevance_tokens": relevance_tokens,
         }
 
     async def _openalex(self, client: httpx.AsyncClient, query: str) -> list[ExternalRecord]:
