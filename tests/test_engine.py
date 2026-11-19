@@ -246,8 +246,8 @@ def test_full_research_loop_applies_delivery_gate():
     assert result["validation"]["critical_flags"]["missing_required_deliverable"] is False
     assert result["quality_status"] == "passed"
     assert result["loop_count"] == 0
-    assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
-    assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
+    assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["loop_count"] + 1
+    assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == result["loop_count"] + 1
     assert result["approval"]["status"] == "approved"
     assert "本科生" in result["human_feedback"]
 
