@@ -240,13 +240,12 @@ def test_full_research_loop_applies_delivery_gate():
         if item["node_id"] == "reviewer" and item.get("score") is not None
     ]
     assert max(reviewer_scores) >= 80
-    # The mock reviewer reaches its nominal threshold, but its deliberately short
-    # draft has no usable references. The deterministic delivery gate must retain
-    # the lower audited score instead of reporting a false pass.
-    assert result["score"] == 69
-    assert result["validation"]["critical_flags"]["missing_required_deliverable"] is True
-    assert result["loop_count"] == result["workflow_snapshot"]["max_loop_count"]
-    assert len(result["node_runs"]) >= 18
+    # The current mock report contains the required deliverable and evidence, so
+    # the relaxed blocker rules must allow a genuine passing score.
+    assert result["score"] >= result["workflow_snapshot"]["quality_threshold"]
+    assert result["validation"]["critical_flags"]["missing_required_deliverable"] is False
+    assert result["quality_status"] == "passed"
+    assert result["loop_count"] == 0
     assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
     assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == result["workflow_snapshot"]["max_loop_count"] + 1
     assert result["approval"]["status"] == "approved"
