@@ -49,7 +49,8 @@ export type NodeRun = {
 export type KnowledgeDocument = {
   id: string; title: string; organization: string; published_at: string; url: string
   filename: string; path?: string; size?: number; characters?: number; chunks?: number
-  editable: boolean; updated_at?: string; content?: string
+    editable: boolean; updated_at?: string; content?: string
+    authors?: string; doi?: string; cited_by_count?: string; original_file?: string; file_type?: string
 }
 
 export type KnowledgeSearchResult = {
@@ -57,6 +58,7 @@ export type KnowledgeSearchResult = {
   url: string; chunk: string; score: string; snippet: string
   coverage?: string; match_terms?: string[]
   evidence_id?: string; doi?: string; relevance_score?: number; relevance_reason?: string
+  cited_by_count?: string
   supported_claims?: string[]; limitations?: string[]
 }
 

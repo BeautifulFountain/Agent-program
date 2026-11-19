@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import math
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree
@@ -59,6 +61,49 @@ class ExternalKnowledgeService:
 
     def __init__(self, knowledge: LocalKnowledgeTool) -> None:
         self.knowledge = knowledge
+
+    async def enrich_imported_document(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Best-effort Crossref enrichment; local ingestion succeeds when the network is unavailable."""
+        doi = _clean(document.get("doi", ""))
+        title = _clean(document.get("title", ""))
+        if not doi and len(title) < 8:
+            return document
+        try:
+            async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "AgentFlow/0.1 (metadata enrichment)"}) as client:
+                params: dict[str, str | int] = {
+                    "query.bibliographic": doi or title,
+                    "rows": 3,
+                    "select": "DOI,title,author,published,container-title,URL,is-referenced-by-count",
+                }
+                if settings.crossref_mailto:
+                    params["mailto"] = settings.crossref_mailto
+                response = await client.get("https://api.crossref.org/works", params=params)
+                response.raise_for_status()
+                items = response.json().get("message", {}).get("items", [])
+            if not items:
+                return document
+            normalized_title = title.lower()
+            if doi:
+                item = next((entry for entry in items if _clean(entry.get("DOI", "")).lower() == doi.lower()), items[0])
+            else:
+                item = max(items, key=lambda entry: SequenceMatcher(None, normalized_title, _clean(" ".join(entry.get("title") or [])).lower()).ratio())
+                similarity = SequenceMatcher(None, normalized_title, _clean(" ".join(item.get("title") or [])).lower()).ratio()
+                if similarity < 0.88:
+                    return document
+            date_parts = ((item.get("published") or {}).get("date-parts") or [[]])[0]
+            authors = ", ".join(" ".join(filter(None, [entry.get("given"), entry.get("family")])) for entry in item.get("author", [])[:12])
+            item_doi = _clean(item.get("DOI", ""))
+            return self.knowledge.update_document_metadata(document["id"], {
+                "title": _clean(" ".join(item.get("title") or [])),
+                "organization": _clean(" ".join(item.get("container-title") or [])),
+                "published_at": "-".join(str(part) for part in date_parts),
+                "url": item.get("URL") or (f"https://doi.org/{item_doi}" if item_doi else ""),
+                "authors": authors,
+                "doi": item_doi,
+                "cited_by_count": str(item.get("is-referenced-by-count") or ""),
+            })
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return document
 
     @staticmethod
     def passes_relevance_threshold(score: int, summary: str) -> bool:
@@ -242,6 +287,16 @@ class ExternalKnowledgeService:
                         discarded_irrelevant += 1
         assessed, relevance_tokens = await self.assess_content_relevance(query, records)
         discarded_irrelevant += max(0, len(records) - len(assessed))
+        # Relevance remains the gate. Within relevant evidence, prefer established
+        # highly cited work without excluding strong recent papers with few citations.
+        assessed.sort(
+            key=lambda pair: (
+                int(pair[1].get("relevance_score") or 0) * 0.78
+                + min(100.0, math.log10(max(0, pair[0].cited_by_count or 0) + 1) * 32) * 0.22,
+                int(pair[1].get("relevance_score") or 0),
+            ),
+            reverse=True,
+        )
         imported: list[dict] = []
         duplicates = 0
         seen: set[str] = set()
@@ -253,12 +308,19 @@ class ExternalKnowledgeService:
             seen.add(identity)
             document, created = self.knowledge.add_external_document(
                 record.provider, record.identity, record.title, record.markdown(),
-                {"organization": record.organization or record.provider, "published_at": record.published_at, "url": record.url},
+                {
+                    "organization": record.organization or record.provider,
+                    "published_at": record.published_at,
+                    "url": record.url,
+                    "authors": record.authors,
+                    "doi": record.doi,
+                    "cited_by_count": str(record.cited_by_count or ""),
+                },
             )
             if created:
                 imported.append({
                     "id": document["id"], "provider": record.provider, "title": record.title,
-                    "url": record.url, "doi": record.doi, **assessment,
+                    "url": record.url, "doi": record.doi, "cited_by_count": record.cited_by_count, **assessment,
                 })
             else:
                 duplicates += 1

@@ -78,6 +78,14 @@ class KnowledgeDocumentCreate(BaseModel):
     url: str = Field(default="", max_length=1000)
 
 
+class KnowledgeFileImport(BaseModel):
+    filename: str = Field(min_length=3, max_length=200)
+    data_base64: str = Field(min_length=1, max_length=30_000_000)
+    organization: str = Field(default="", max_length=200)
+    published_at: str = Field(default="", max_length=40)
+    url: str = Field(default="", max_length=1000)
+
+
 class KnowledgeSearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=1000)
     limit: int = Field(default=5, ge=1, le=20)

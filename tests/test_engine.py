@@ -317,7 +317,8 @@ def test_validation_applies_critical_score_caps():
         "critical_flags": {"violated_explicit_constraints": True},
     })
     assert fabricated["score"] == 59
-    assert constraint_failure["score"] == 79
+    assert constraint_failure["score"] == 95
+    assert constraint_failure["critical_flags"]["violated_explicit_constraints"] is True
 
 
 def test_validation_normalizes_structured_issues():
@@ -431,13 +432,74 @@ def test_review_feedback_routes_to_responsible_upstream_agents():
     assert "literature" in selected
     assert "analyst" in selected
 
+    writer_only = rework_agent_ids({
+        "issues": ["引用位置应紧邻对应数字，限定语可以更清楚"],
+        "suggestions": ["调整句内引用和措辞"],
+    }, {"planner", "literature", "analyst", "writer"})
+    assert writer_only == []
+
 
 def test_automatic_rework_runs_until_threshold_or_loop_budget_is_exhausted():
-    assert automatic_rework_required(69, 80, 0, 3) is True
-    assert automatic_rework_required(69, 80, 1, 3) is True
-    assert automatic_rework_required(60, 80, 2, 3) is True
-    assert automatic_rework_required(60, 80, 3, 3) is False
-    assert automatic_rework_required(80, 80, 1, 3) is False
+    assert automatic_rework_required({"score": 69}, 80, 0, 3) is True
+    assert automatic_rework_required({"score": 79}, 80, 1, 3) is True
+    assert automatic_rework_required({"score": 60}, 80, 2, 3) is True
+    assert automatic_rework_required({"score": 60}, 80, 3, 3) is False
+    assert automatic_rework_required({"score": 80}, 80, 1, 3) is False
+    assert automatic_rework_required({
+        "score": 79, "critical_flags": {"violated_explicit_constraints": True},
+    }, 80, 0, 3) is True
+    assert automatic_rework_required(
+        {"score": 95, "critical_flags": {"fabricated_data": True}}, 80, 1, 3,
+    ) is True
+
+
+def test_knowledge_file_import_preserves_original_and_builds_text_index(tmp_path):
+    import base64
+    from io import BytesIO
+    from docx import Document
+
+    knowledge = LocalKnowledgeTool(str(tmp_path / "knowledge"))
+    document = Document()
+    document.core_properties.title = "可检索的科研文档"
+    document.core_properties.author = "测试作者"
+    document.add_heading("研究背景", level=1)
+    document.add_paragraph("这是用于知识库检索的正文内容。")
+    payload = BytesIO()
+    document.save(payload)
+
+    imported = knowledge.add_file_document(
+        "research.docx", base64.b64encode(payload.getvalue()).decode("ascii"),
+        {"organization": "测试机构", "published_at": "2026-11-19", "url": "https://example.com/research"},
+    )
+
+    assert imported["title"] == "可检索的科研文档"
+    assert imported["authors"] == "测试作者"
+    assert imported["file_type"] == "docx"
+    assert "研究背景" in imported["content"]
+    assert (knowledge.root / imported["original_file"]).exists()
+    assert knowledge.search("知识库检索 正文内容")
+
+
+def test_knowledge_file_import_infers_doi_and_source_url(tmp_path):
+    import base64
+
+    knowledge = LocalKnowledgeTool(str(tmp_path / "knowledge"))
+    imported = knowledge.add_file_document(
+        "paper.txt",
+        base64.b64encode(b"A Reliable Research Paper\nDOI: 10.1234/example.5678\nAbstract\nUseful evidence.").decode("ascii"),
+        {},
+    )
+
+    assert imported["title"] == "A Reliable Research Paper"
+    assert imported["doi"] == "10.1234/example.5678"
+    assert imported["url"] == "https://doi.org/10.1234/example.5678"
+
+
+def test_knowledge_file_import_rejects_unsupported_legacy_doc(tmp_path):
+    import base64
+    knowledge = LocalKnowledgeTool(str(tmp_path / "knowledge"))
+    with pytest.raises(ValueError, match="旧版 DOC"):
+        knowledge.add_file_document("legacy.doc", base64.b64encode(b"legacy").decode("ascii"), {})
 
 
 def test_delivery_metrics_are_deterministic():

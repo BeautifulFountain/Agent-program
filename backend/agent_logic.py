@@ -72,12 +72,14 @@ PROTOCOLS: dict[str, AgentProtocol] = {
             "评分锚点：90至100可直接交付；80至89达到标准但有少量改进空间；70至79需要返工；"
             "60至69存在重大缺陷；0至59不具备交付条件。critical_flags必须包含四个布尔字段："
             "fabricated_data、unverifiable_core_citations、missing_required_deliverable、violated_explicit_constraints。"
-            "若fabricated_data为true，总分最高59；若unverifiable_core_citations或missing_required_deliverable为true，总分最高69；"
-            "若violated_explicit_constraints为true，总分最高79。issues和suggestions分别最多6项，只保留影响验收的关键问题。"
+            "fabricated_data仅在确有编造数据或来源时为true；unverifiable_core_citations仅在核心结论整体缺乏任何可核验证据时为true，"
+            "单条引用信息不完整不得触发；missing_required_deliverable仅在用户明确要求的核心成果完全缺失时为true。"
+            "violated_explicit_constraints只表示存在约束偏差并进入约束维度扣分，不设置总分封顶；轻微时间、措辞、引用位置或"
+            "限定语问题不得标为阻断。issues和suggestions分别最多6项，只保留影响验收的关键问题。"
             "返工稿必须沿用与上一轮完全相同的量表和严格度；已修复的问题应得到正向反映，不得为了制造反馈而新增低价值扣分项。"
         ),
         (
-            "五个维度必须齐全且使用精确名称", "总分必须符合固定权重与严重问题封顶规则",
+            "五个维度必须齐全且使用精确名称", "总分必须符合固定权重与真正阻断问题封顶规则",
             "问题必须具体可定位", "建议必须能驱动下一轮返工", "不得用大量低风险项淹没关键缺陷",
             "只有出现新的实质性错误时分数才可下降并须说明原因",
         ),

@@ -44,7 +44,12 @@ CRITICAL_SCORE_CAPS = {
     "fabricated_data": 59,
     "unverifiable_core_citations": 69,
     "missing_required_deliverable": 69,
-    "violated_explicit_constraints": 79,
+}
+
+BLOCKING_FLAGS = {
+    "fabricated_data",
+    "unverifiable_core_citations",
+    "missing_required_deliverable",
 }
 
 
@@ -115,9 +120,10 @@ def normalize_validation(value: dict) -> dict:
             except (TypeError, ValueError):
                 normalized_dimensions[str(name)] = 0
     raw_flags = value.get("critical_flags") or {}
+    flag_names = {*CRITICAL_SCORE_CAPS, "violated_explicit_constraints"}
     critical_flags = {
         name: bool(raw_flags.get(name, False)) if isinstance(raw_flags, dict) else False
-        for name in CRITICAL_SCORE_CAPS
+        for name in flag_names
     }
     model_score = max(0, min(100, int(value.get("score", value.get("total_score", 0)) or 0)))
     weighted_score = _weighted_review_score(normalized_dimensions, critical_flags)
@@ -175,10 +181,15 @@ def rework_agent_ids(validation: dict, available: set[str]) -> list[str]:
     """Route review findings back to the upstream owners that can actually repair them."""
     feedback = "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])]).lower()
     selected: list[str] = []
+    # Only restart expensive upstream work when the feedback actually requires it.
+    # Citation placement, wording and ordinary completeness issues belong to Writer.
     rules = (
-        ("planner", ("结构", "任务拆分", "依赖", "范围", "交付物", "完整性")),
-        ("literature", ("引用", "文献", "来源", "证据", "doi", "url", "可验证")),
-        ("analyst", ("数据", "变量", "样本", "统计", "指标", "方法", "公式", "可复现")),
+        ("planner", ("任务拆分错误", "依赖关系错误", "核心交付物缺失", "研究范围错误")),
+        ("literature", (
+            "无可用证据", "来源不存在", "文献不相关", "主题不相关", "证据不足", "无法核验出版",
+            "超出时间范围", "doi无效", "url无效", "重新检索",
+        )),
+        ("analyst", ("统计方法", "公式错误", "变量定义", "计算结果错误", "样本设计错误")),
     )
     for agent_id, terms in rules:
         if agent_id in available and any(term in feedback for term in terms):
@@ -186,9 +197,17 @@ def rework_agent_ids(validation: dict, available: set[str]) -> list[str]:
     return selected
 
 
-def automatic_rework_required(score: int, quality_threshold: int, loop_count: int, max_loop_count: int) -> bool:
-    """Keep reworking until the quality gate passes or the configured loop budget is exhausted."""
-    return score < quality_threshold and loop_count < max_loop_count
+def validation_has_blocker(validation: dict) -> bool:
+    flags = validation.get("critical_flags") or {}
+    return any(bool(flags.get(name)) for name in BLOCKING_FLAGS)
+
+
+def automatic_rework_required(
+    validation: dict, quality_threshold: int, loop_count: int, max_loop_count: int,
+) -> bool:
+    """Rework every draft below the configured threshold, plus any blocked draft."""
+    score = int(validation.get("score") or 0)
+    return (validation_has_blocker(validation) or score < quality_threshold) and loop_count < max_loop_count
 
 
 def select_best_result(run: dict) -> bool:
@@ -482,7 +501,7 @@ class RunManager:
             run["validation"] = validation
             run["score"] = int(validation.get("score", 0))
             while automatic_rework_required(
-                run["score"], workflow["quality_threshold"], run["loop_count"], workflow["max_loop_count"]
+                validation, workflow["quality_threshold"], run["loop_count"], workflow["max_loop_count"],
             ):
                 self._assert_not_cancelled(run_id)
                 previous_score = int(run["score"])
@@ -493,7 +512,13 @@ class RunManager:
                     "不得扩展无关主题、增加重复免责声明或把核验过程写入报告正文。\n"
                     + "\n".join([*validation.get("issues", []), *validation.get("suggestions", [])])
                 )
-                for node_id in rework_agent_ids(validation, set(nodes)):
+                # Preserve the user's original Agent selection. Every selected
+                # upstream Agent receives the same review feedback on each round.
+                upstream_targets = [
+                    node["id"] for node in workflow["nodes"]
+                    if node["id"] not in {"requirements", "writer", "fact-checker", "reviewer"}
+                ]
+                for node_id in upstream_targets:
                     completed[node_id] = await self._execute_node(
                         run, nodes[node_id], completed, feedback=feedback, rework=True,
                     )
@@ -514,14 +539,22 @@ class RunManager:
             run["final_output"] = completed.get("writer")
             select_best_result(run)
             run["delivery_metrics"] = evaluate_deliverable(run)
-            if int(run.get("score") or 0) < int(workflow["quality_threshold"]) and run["loop_count"] >= workflow["max_loop_count"]:
+            final_validation = run.get("validation") or {}
+            final_blocked = validation_has_blocker(final_validation)
+            final_score = int(run.get("score") or 0)
+            run["quality_status"] = (
+                "blocked" if final_blocked or final_score < int(workflow["quality_threshold"])
+                else "passed"
+            )
+            if (final_blocked or final_score < int(workflow["quality_threshold"])) and run["loop_count"] >= workflow["max_loop_count"]:
                 run["status"] = "failed"
                 run["progress"] = 100
                 run["finished_at"] = utc_now()
                 issue_text = "；".join(str(item) for item in (run.get("validation") or {}).get("issues", [])[:3])
                 run["error"] = (
                     f"已完成最多{workflow['max_loop_count']}轮返工，最高评分{run.get('score', 0)}分，"
-                    f"仍未达到{workflow['quality_threshold']}分质量阈值。主要问题：{issue_text or '评审仍存在未解决问题'}"
+                    f"仍存在阻断问题或评分低于{workflow['quality_threshold']}分质量阈值。主要问题："
+                    f"{issue_text or '评审仍存在未解决问题'}"
                 )[:1000]
                 self.save(run)
                 await self.emit(run_id, "run.failed", {
@@ -630,6 +663,9 @@ class RunManager:
                 if node["id"] == "writer":
                     output = clean_report_output(output)
                 run["token_usage"] += tokens
+                node_run["token_usage"] = tokens + sum(
+                    int(call.get("token_usage") or 0) for call in tool_calls
+                )
                 node_run.update(status="completed", output=output, retry_count=attempt, finished_at=utc_now())
                 if node["kind"] == "validator":
                     node_run["score"] = normalize_validation(_safe_json(output))["score"]

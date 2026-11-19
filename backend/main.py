@@ -20,7 +20,7 @@ from backend.engine import clean_report_output, evaluate_deliverable, run_manage
 from backend.llm import llm
 from backend.routing import recommend_agents
 from backend.report_export import build_report_docx
-from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, DispatchRecommendationRequest, FinalReworkRequest, KnowledgeDocumentCreate, KnowledgeSearchRequest, RunCreate, Workflow, WorkflowCreate, utc_now
+from backend.schemas import Agent, AgentCreate, ApiResponse, ApprovalRequest, AssistantChatRequest, DispatchRecommendationRequest, FinalReworkRequest, KnowledgeDocumentCreate, KnowledgeFileImport, KnowledgeSearchRequest, RunCreate, Workflow, WorkflowCreate, utc_now
 from backend.seed import seed_defaults
 
 @asynccontextmanager
@@ -108,6 +108,19 @@ async def create_knowledge(payload: KnowledgeDocumentCreate) -> ApiResponse:
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return ok(document, "知识文档已加入本地知识库")
+
+
+@app.post("/api/knowledge/import-file", response_model=ApiResponse, status_code=201)
+async def import_knowledge_file(payload: KnowledgeFileImport) -> ApiResponse:
+    try:
+        document = agent_logic.knowledge.add_file_document(
+            payload.filename, payload.data_base64,
+            {"organization": payload.organization, "published_at": payload.published_at, "url": payload.url},
+        )
+        document = await agent_logic.external.enrich_imported_document(document)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return ok(document, "资料原件已保存并建立检索索引")
 
 
 @app.post("/api/knowledge/search", response_model=ApiResponse)
