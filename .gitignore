@@ -27,7 +27,8 @@ docs/fixed-demo-result.json
 docs/feedback-optimization-case.md
 output/competition/
 tmp/
-.ppt-build-contents/
+.ppt-build-*/
+docs/ppt-assets/
 knowledge/external/*.md
 tmp/whitepaper-render/
 tmp/whitepaper-pdf-pages/
