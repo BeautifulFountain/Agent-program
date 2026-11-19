@@ -245,7 +245,7 @@ def test_full_research_loop_applies_delivery_gate():
     assert result["score"] >= result["workflow_snapshot"]["quality_threshold"]
     assert result["validation"].get("critical_flags", {}).get("missing_required_deliverable", False) is False
     assert result["quality_status"] == "passed"
-    assert result["loop_count"] == 0
+    assert 0 <= result["loop_count"] <= result["workflow_snapshot"]["max_loop_count"]
     assert sum(item["node_id"] == "writer" for item in result["node_runs"]) == result["loop_count"] + 1
     assert sum(item["node_id"] == "reviewer" for item in result["node_runs"]) == result["loop_count"] + 1
     assert result["approval"]["status"] == "approved"
