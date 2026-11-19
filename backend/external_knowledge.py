@@ -110,6 +110,7 @@ class ExternalKnowledgeService:
                 "title": record.title,
                 "abstract": record.summary[:1800],
                 "source": record.provider,
+                "published_at": record.published_at,
             }
             for index, record in enumerate(records[:30])
         ]
@@ -118,6 +119,7 @@ class ExternalKnowledgeService:
             system = (
                 "你是科研证据相关性审核器。仅依据题名和摘要判断候选文献能否支持研究任务，输出JSON。"
                 "不能因共享宽泛关键词就判为相关；研究对象、核心问题和任务要求必须对应。"
+                "若人工确认意见给出了明确年份范围，范围外文献必须判为reject；未给出明确范围时不得自行限制年份。"
                 "摘要为空或无法判断正文内容时不得作为核心证据。每项输出index、decision、score、reason、"
                 "supported_claims和limitations；decision只能是relevant或reject，score为0到100。"
             )

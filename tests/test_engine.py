@@ -166,7 +166,8 @@ def test_requirements_only_asks_unresolved_questions():
     prompt, _ = agent_logic.prepare("requirements", "撰写约5000字科研方法报告，引用可核验学术资料", "基础输入")
     assert "不得重复询问" in prompt
     assert "最多3组" in prompt
-    assert "按原要求执行，不增加额外限制" in prompt
+    assert "按原要求执行" in prompt
+    assert "不得询问是否需要文献" in prompt
 
 
 def test_literature_forbids_claiming_local_retrieval_gap_is_research_gap():
@@ -197,7 +198,16 @@ def test_approval_options_parse_and_fallback():
     output = '```approval_options\n[{"id":"scope","question":"范围？","type":"single","options":["本校","全国"]}]\n```'
     parsed = extract_approval_options(output, "测试任务")
     assert parsed[0]["options"] == ["本校", "全国"]
-    assert len(extract_approval_options("普通文本", "测试任务")) >= 3
+    assert len(extract_approval_options("普通文本", "测试任务")) == 2
+
+
+def test_approval_options_remove_optional_citation_question():
+    output = '''```approval_options
+[{"id":"scope","question":"范围？","type":"single","options":["种植","综合"]},
+ {"id":"citation","question":"是否需要参考文献标注？","type":"single","options":["需要参考文献","不需要参考文献"]}]
+```'''
+    parsed = extract_approval_options(output, "形成研究报告")
+    assert [item["id"] for item in parsed] == ["scope"]
 
 
 def test_database_round_trip(tmp_path):

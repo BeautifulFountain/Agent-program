@@ -514,6 +514,21 @@ class RunManager:
             run["final_output"] = completed.get("writer")
             select_best_result(run)
             run["delivery_metrics"] = evaluate_deliverable(run)
+            if int(run.get("score") or 0) < int(workflow["quality_threshold"]) and run["loop_count"] >= workflow["max_loop_count"]:
+                run["status"] = "failed"
+                run["progress"] = 100
+                run["finished_at"] = utc_now()
+                issue_text = "；".join(str(item) for item in (run.get("validation") or {}).get("issues", [])[:3])
+                run["error"] = (
+                    f"已完成最多{workflow['max_loop_count']}轮返工，最高评分{run.get('score', 0)}分，"
+                    f"仍未达到{workflow['quality_threshold']}分质量阈值。主要问题：{issue_text or '评审仍存在未解决问题'}"
+                )[:1000]
+                self.save(run)
+                await self.emit(run_id, "run.failed", {
+                    "error": run["error"], "score": run.get("score"),
+                    "quality_threshold": workflow["quality_threshold"],
+                })
+                return
             run["status"] = "completed"
             run["progress"] = 100
             run["finished_at"] = utc_now()

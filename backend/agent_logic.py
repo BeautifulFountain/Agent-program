@@ -23,7 +23,9 @@ PROTOCOLS: dict[str, AgentProtocol] = {
         (
             "必须包含：问题定义、研究范围、约束、交付标准、待人工确认问题。先提取原始任务中已经明确的要求，"
             "不得重复询问，也不得擅自增加学科范围、引用格式、文献数量、数据来源或附加交付物。"
-            "只对会实质影响执行且原任务尚未说明的歧义提问，最多3组；任务已经足够明确时应提供“按原要求执行，不增加额外限制”。"
+            "研究报告、综述、论文或研究简报默认必须检索并引用可核验文献，不得询问是否需要文献或提供不引用文献的选项。"
+            "只对会实质影响执行且原任务尚未说明的方向性问题提问，最多3组；选项保持宽泛，避免用过细条件限制后续分析，"
+            "并提供‘综合分析’或‘按原要求执行’选项，使后续Agent可依据证据合理组织内容。"
             "最后追加一个```approval_options代码块，内容为JSON数组；每项包含id、question、type(single/multiple)、"
             "options字符串数组，提供2至4个可直接勾选的合理选项。"
         ),
@@ -132,6 +134,7 @@ class AgentLogic:
             system = (
                 "你是科研证据内容相关性审核器。仅输出JSON。根据题名和证据片段判断其内容是否能支持任务。"
                 "不能只看关键词重合；研究对象、核心问题和任务要求必须对应。每项输出index、score、reason、"
+                "若人工确认意见给出了明确年份范围，范围外资料必须低于50分；未给出明确年份时不得自行设置年份门槛。"
                 "supported_claims、limitations。score为0到100，低于50代表不应进入本任务证据集。"
             )
             candidates = [
@@ -284,6 +287,9 @@ class AgentLogic:
                 "每条严格按“[序号] 作者. 题名[文献类型]. 期刊或机构, 年份. DOI或完整URL.”格式独占一段。"
                 "禁止在参考文献条目后追加证据等级、摘要级信息、唯一来源、检索说明或核验说明。"
                 "禁止列出正文未使用的装饰性文献，也不得省略全部引用。"
+                "百分比、准确率、增长率、节省比例、样本量和年份等数字结论，必须能在对应证据的snippet或"
+                "supported_claims中直接找到，并在该句后紧邻标注来源；禁止把一个来源的数字归给另一来源，"
+                "禁止把多个单一案例并列包装成多源互证。证据中的地域、样本和时间限制必须随结论说明。"
                 "参考文献章节只能列出真实文献条目，禁止写入检索失败原因、引用策略、人工确认意见、核验过程、"
                 "尚待补充事项或‘后续版本将’之类计划。任何用户要求和评审意见都只能转化为报告内容与结构，"
                 "不得原样复述为正文，也不得向读者解释系统如何完成任务。"
@@ -325,15 +331,19 @@ def extract_approval_options(output: str, task: str) -> list[dict]:
                 clean = []
                 for index, item in enumerate(parsed[:6]):
                     options = [str(value)[:120] for value in item.get("options", [])[:5] if str(value).strip()]
-                    if item.get("question") and len(options) >= 2:
-                        clean.append({"id": str(item.get("id") or f"q{index + 1}"), "question": str(item["question"])[:160], "type": "multiple" if item.get("type") == "multiple" else "single", "options": options})
+                    question = str(item.get("question") or "")[:160]
+                    optional_citations = (
+                        any(term in question for term in ("是否需要参考文献", "要不要参考文献", "是否需要文献", "是否引用"))
+                        or any("不需要参考文献" in option or "无需参考文献" in option for option in options)
+                    )
+                    if question and len(options) >= 2 and not optional_citations:
+                        clean.append({"id": str(item.get("id") or f"q{index + 1}"), "question": question, "type": "multiple" if item.get("type") == "multiple" else "single", "options": options})
                 if clean:
                     return clean
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
     subject = task[:32].rstrip("，。； ")
     return [
-        {"id": "scope", "question": "本次研究对象和范围如何界定？", "type": "single", "options": ["聚焦一个典型群体或单位", "覆盖多个群体并进行对比", "采用公开资料开展宏观研究"]},
-        {"id": "indicators", "question": "优先分析哪些维度？（可多选）", "type": "multiple", "options": ["使用或应用现状", "效率与质量", "风险与局限", "改进建议与实施路径"]},
-        {"id": "evidence", "question": f"围绕“{subject}”采用什么证据边界？", "type": "single", "options": ["仅使用本地知识库与已提供资料", "允许提出数据采集方案但不虚构结果", "结合公开资料并明确标注待核验来源"]},
+        {"id": "scope", "question": "本次研究范围侧重什么层面？", "type": "single", "options": ["聚焦典型场景深入分析", "覆盖多个场景综合分析", "按原任务范围自由展开"]},
+        {"id": "focus", "question": f"围绕“{subject}”优先突出什么内容？", "type": "multiple", "options": ["技术与发展现状", "典型应用与成效", "问题与局限", "趋势与建议"]},
     ]
